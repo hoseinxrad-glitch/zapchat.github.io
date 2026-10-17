@@ -1,10 +1,11 @@
 'use client'
 
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useMemo } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Send, Paperclip, Smile, ArrowLeft, Phone, Video, MoreVertical,
-  Check, CheckCheck, File as FileIcon, X, Loader2, Users, Settings
+  Check, CheckCheck, File as FileIcon, X, Loader2, Users, Settings,
+  Reply, Edit2, Pin, Trash2, Copy, Bell, BellOff, Image as ImageIcon, Mic,
 } from 'lucide-react'
 import { Avatar } from './Avatar'
 import { Button } from '@/components/ui/button'
@@ -15,9 +16,14 @@ import {
   DropdownMenuTrigger, DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
 import { useChatStore, type ChatMessage } from '@/lib/chat-store'
+import { useExtendedStore, type Reaction } from '@/lib/extended-store'
 import { apiFetch, formatTimeFull, formatBytes } from '@/lib/chat-utils'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
+import { ReactionPicker } from './ReactionPicker'
+import { MarkdownRenderer } from './MarkdownRenderer'
+import { VoiceRecorder } from './VoiceRecorder'
+import { AudioPlayer } from './AudioPlayer'
 
 const EMOJIS = ['😀', '😂', '❤️', '👍', '👎', '🔥', '🎉', '🙏', '😍', '😮', '😢', '🤔', '👀', '💯', '✨', '⚡', '🚀', '💎', '🌟', '💜']
 
@@ -34,21 +40,36 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
   const onlineUsers = useChatStore((s) => s.onlineUsers)
   const typingByUserId = useChatStore((s) => s.typingByUserId)
   const typingByGroup = useChatStore((s) => s.typingByGroup)
-  const groups = useChatStore((s) => s.groups)
   const addMessage = useChatStore((s) => s.addMessage)
-  const markChatRead = useChatStore((s) => s.markChatRead)
   const updateMessage = useChatStore((s) => s.updateMessage)
+  const removeMessage = useChatStore((s) => s.removeMessage)
+  const markChatRead = useChatStore((s) => s.markChatRead)
   const upsertChat = useChatStore((s) => s.upsertChat)
+
+  // Extended store for replies, edits, reactions, etc.
+  const replyTo = useExtendedStore((s) => s.replyTo)
+  const setReplyTo = useExtendedStore((s) => s.setReplyTo)
+  const editingMessage = useExtendedStore((s) => s.editingMessage)
+  const setEditingMessage = useExtendedStore((s) => s.setEditingMessage)
+  const reactionsByMessage = useExtendedStore((s) => s.reactionsByMessage)
+  const setReactions = useExtendedStore((s) => s.setReactions)
+  const toggleReactionLocal = useExtendedStore((s) => s.toggleReactionLocal)
+  const pinnedMessages = useExtendedStore((s) => s.pinnedMessages)
+  const setPinnedMessage = useExtendedStore((s) => s.setPinnedMessage)
+  const silentSend = useExtendedStore((s) => s.silentSend)
+  const setSilentSend = useExtendedStore((s) => s.setSilentSend)
+  const call = useExtendedStore((s) => s.call)
+  const setCall = useExtendedStore((s) => s.setCall)
 
   const [input, setInput] = useState('')
   const [showEmoji, setShowEmoji] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const imageInputRef = useRef<HTMLInputElement>(null)
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const lastTypingSentRef = useRef<boolean>(false)
 
-  // Resolve active conversation into a unified shape
   const isGroup = activeConversation?.type === 'group'
   const activeId = isGroup
     ? activeConversation!.groupId
@@ -70,30 +91,36 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
     ? typingByUserId[otherUser.id]
     : false
 
-  // Auto-scroll on new messages
+  // When editing message changes, sync input
+  useEffect(() => {
+    if (editingMessage) {
+      setInput(editingMessage.content)
+    } else if (!replyTo) {
+      setInput('')
+    }
+  }, [editingMessage])
+
+  // Auto-scroll
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [messages.length, isTyping])
 
-  // Mark as read when opening chat
+  // Load messages + reactions when opening a chat
   useEffect(() => {
     if (!activeId || !activeConversation) return
 
     markChatRead(activeId)
     if (!isGroup && otherUser) {
-      apiFetch(`/api/chats?action=read`, {
+      apiFetch('/api/chats?action=read', {
         method: 'PATCH',
         body: JSON.stringify({ chatId: activeId }),
       }).catch(() => {})
     } else if (isGroup) {
-      apiFetch(`/api/groups/${activeId}/messages?action=read`, {
-        method: 'PATCH',
-      }).catch(() => {})
+      apiFetch(`/api/groups/${activeId}/messages?action=read`, { method: 'PATCH' }).catch(() => {})
     }
 
-    // Load messages if not loaded yet
     const existing = useChatStore.getState().messagesByConversation[activeId]
     if (!existing || existing.length === 0) {
       const endpoint = isGroup
@@ -101,13 +128,41 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
         : `/api/chats?action=messages&chatId=${activeId}&limit=200`
       apiFetch<{ messages: ChatMessage[] }>(endpoint)
         .then((data) => {
-          if (data.messages && data.messages.length > 0) {
+          if (data.messages?.length > 0) {
             useChatStore.getState().setMessages(activeId, data.messages)
+            // Load reactions for each message
+            data.messages.forEach((msg) => loadReactions(msg.id))
           }
         })
         .catch((e) => console.error('[load messages]', e))
+    } else {
+      // Load reactions for existing messages
+      existing.forEach((msg) => {
+        if (!reactionsByMessage[msg.id]) loadReactions(msg.id)
+      })
+    }
+
+    // Load pinned message
+    if (isGroup && group) {
+      apiFetch<{ group: any }>(`/api/groups/${activeId}`).then((data) => {
+        if (data.group?.pinnedMessageId) {
+          apiFetch<{ messages: ChatMessage[] }>(`/api/groups/${activeId}/messages?limit=200`)
+            .then((d) => {
+              const pinned = d.messages.find((m) => m.id === data.group.pinnedMessageId)
+              if (pinned) setPinnedMessage(activeId, pinned)
+            })
+            .catch(() => {})
+        }
+      }).catch(() => {})
     }
   }, [activeId, isGroup, markChatRead])
+
+  const loadReactions = async (messageId: string) => {
+    try {
+      const data = await apiFetch<{ reactions: Reaction[] }>(`/api/reactions?messageId=${messageId}`)
+      setReactions(messageId, data.reactions)
+    } catch {}
+  }
 
   const handleSend = async () => {
     if (!input.trim() || !activeId || !currentUser || !activeConversation) return
@@ -115,10 +170,43 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
     setInput('')
     sendTyping(false)
 
+    // If editing an existing message
+    if (editingMessage) {
+      try {
+        const data = await apiFetch<{ message: ChatMessage; recipientIds: string[] }>(
+          '/api/messages?action=edit',
+          {
+            method: 'PATCH',
+            body: JSON.stringify({ id: editingMessage.id, content: text }),
+          }
+        )
+        // Update locally
+        useChatStore.getState().setMessages(
+          activeId,
+          (useChatStore.getState().messagesByConversation[activeId] || []).map((m) =>
+            m.id === editingMessage.id ? { ...data.message, pending: false } : m
+          )
+        )
+        // Broadcast via WS
+        const socket = (window as any).__zapchat_socket
+        if (socket && data.recipientIds?.length > 0) {
+          socket.emit('message:edited', {
+            message: data.message,
+            recipientIds: data.recipientIds,
+          })
+        }
+        setEditingMessage(null)
+        toast.success('Message edited')
+      } catch (e: any) {
+        toast.error(e.message || 'Edit failed')
+      }
+      return
+    }
+
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 
     if (isGroup && group) {
-      // -------- Group message --------
+      // Group message
       const tempMessage: ChatMessage = {
         id: tempId,
         groupId: activeId,
@@ -129,68 +217,52 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
         read: false,
         createdAt: new Date().toISOString(),
         sender: {
-          id: currentUser.id,
-          username: currentUser.username,
-          displayName: currentUser.displayName,
-          avatarColor: currentUser.avatarColor,
+          id: currentUser.id, username: currentUser.username,
+          displayName: currentUser.displayName, avatarColor: currentUser.avatarColor,
         },
         pending: true,
+        silent: silentSend,
+        replyToId: replyTo?.id,
       }
       addMessage(activeId, tempMessage)
       upsertChat({
-        id: activeId,
-        isGroup: true,
+        id: activeId, isGroup: true,
         group: {
-          id: group.id,
-          name: group.name,
-          description: group.description,
-          avatarColor: group.avatarColor,
-          creatorId: group.creatorId,
+          id: group.id, name: group.name, description: group.description,
+          avatarColor: group.avatarColor, creatorId: group.creatorId,
           memberCount: group.members.length,
         },
-        lastMessage: tempMessage,
-        unreadCount: 0,
-        updatedAt: new Date().toISOString(),
+        lastMessage: tempMessage, unreadCount: 0, updatedAt: new Date().toISOString(),
       })
 
       try {
         const data = await apiFetch<{ message: ChatMessage; memberIds: string[]; tempId?: string }>(
-          `/api/messages`,
+          '/api/messages',
           {
             method: 'POST',
             body: JSON.stringify({
-              groupId: activeId,
-              content: text,
-              type: 'text',
-              tempId,
+              groupId: activeId, content: text, type: 'text',
+              replyToId: replyTo?.id, silent: silentSend, tempId,
             }),
           }
         )
         updateMessage(activeId, tempId, data.message)
 
-        // Broadcast to group members via WebSocket
         const socket = (window as any).__zapchat_socket
         if (socket && data.memberIds?.length > 0) {
           socket.emit('group:message:send', {
-            messageId: data.message.id,
-            groupId: activeId,
-            senderId: currentUser.id,
-            memberIds: data.memberIds,
-            payload: data.message,
+            messageId: data.message.id, groupId: activeId,
+            senderId: currentUser.id, memberIds: data.memberIds, payload: data.message,
           })
         }
+        setReplyTo(null)
       } catch (e: any) {
-        toast.error('Failed to send message')
-        updateMessage(activeId, tempId, {
-          ...tempMessage,
-          content: '⚠️ Failed: ' + text,
-          pending: false,
-        })
+        toast.error('Failed to send')
       }
       return
     }
 
-    // -------- Direct message --------
+    // Direct message
     if (!otherUser) return
     const tempMessage: ChatMessage = {
       id: tempId,
@@ -202,56 +274,41 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
       read: false,
       createdAt: new Date().toISOString(),
       sender: {
-        id: currentUser.id,
-        username: currentUser.username,
-        displayName: currentUser.displayName,
-        avatarColor: currentUser.avatarColor,
+        id: currentUser.id, username: currentUser.username,
+        displayName: currentUser.displayName, avatarColor: currentUser.avatarColor,
       },
       pending: true,
+      silent: silentSend,
+      replyToId: replyTo?.id,
     }
     addMessage(activeId, tempMessage)
     upsertChat({
-      id: activeId,
-      isGroup: false,
-      otherUser,
-      lastMessage: tempMessage,
-      unreadCount: 0,
-      updatedAt: new Date().toISOString(),
+      id: activeId, isGroup: false, otherUser,
+      lastMessage: tempMessage, unreadCount: 0, updatedAt: new Date().toISOString(),
     })
 
     try {
-      const data = await apiFetch<{ message: ChatMessage; tempId?: string }>(`/api/messages`, {
+      const data = await apiFetch<{ message: ChatMessage; tempId?: string }>('/api/messages', {
         method: 'POST',
         body: JSON.stringify({
-          chatId: activeId,
-          receiverId: otherUser.id,
-          content: text,
-          type: 'text',
-          tempId,
+          chatId: activeId, receiverId: otherUser.id, content: text, type: 'text',
+          replyToId: replyTo?.id, silent: silentSend, tempId,
         }),
       })
       updateMessage(activeId, tempId, data.message)
 
-      // Also emit via WebSocket for real-time delivery confirmation
       const socket = (window as any).__zapchat_socket
       if (socket) {
         socket.emit('message:send', {
-          messageId: data.message.id,
-          chatId: activeId,
-          senderId: currentUser.id,
-          receiverId: otherUser.id,
-          content: data.message.content,
-          type: data.message.type,
+          messageId: data.message.id, chatId: activeId,
+          senderId: currentUser.id, receiverId: otherUser.id,
+          content: data.message.content, type: data.message.type,
           createdAt: data.message.createdAt,
         })
       }
+      setReplyTo(null)
     } catch (e: any) {
-      toast.error('Failed to send message')
-      updateMessage(activeId, tempId, {
-        ...tempMessage,
-        content: '⚠️ Failed: ' + text,
-        pending: false,
-      })
+      toast.error('Failed to send')
     }
   }
 
@@ -265,19 +322,14 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
         .filter((m) => m.user.id !== currentUser.id)
         .map((m) => m.user.id)
       socket.emit('group:typing', {
-        groupId: group.id,
-        fromUserId: currentUser.id,
-        fromUsername: currentUser.username,
-        fromDisplayName: currentUser.displayName,
-        memberIds,
-        isTyping,
+        groupId: group.id, fromUserId: currentUser.id,
+        fromUsername: currentUser.username, fromDisplayName: currentUser.displayName,
+        memberIds, isTyping,
       })
     } else if (otherUser) {
       socket.emit('typing', {
-        fromUserId: currentUser.id,
-        fromUsername: currentUser.username,
-        toUserId: otherUser.id,
-        isTyping,
+        fromUserId: currentUser.id, fromUsername: currentUser.username,
+        toUserId: otherUser.id, isTyping,
       })
     }
     lastTypingSentRef.current = isTyping
@@ -285,13 +337,10 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInput(e.target.value)
-    if (!lastTypingSentRef.current) {
-      sendTyping(true)
-    }
+    if (editingMessage) return // don't send typing while editing
+    if (!lastTypingSentRef.current) sendTyping(true)
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current)
-    typingTimeoutRef.current = setTimeout(() => {
-      sendTyping(false)
-    }, 2000)
+    typingTimeoutRef.current = setTimeout(() => sendTyping(false), 2000)
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -299,9 +348,13 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
       e.preventDefault()
       handleSend()
     }
+    if (e.key === 'Escape') {
+      setReplyTo(null)
+      setEditingMessage(null)
+    }
   }
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>, isImage: boolean) => {
     const file = e.target.files?.[0]
     if (!file || !activeId || !currentUser || !activeConversation) return
 
@@ -310,19 +363,18 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
     try {
       const formData = new FormData()
       formData.append('file', file)
-      const uploadRes = await apiFetch<{ url: string; fileName: string; fileSize: number }>(`/api/upload`, {
-        method: 'POST',
-        body: formData,
-      })
+      const uploadRes = await apiFetch<{ url: string; fileName: string; fileSize: number }>(
+        '/api/upload', { method: 'POST', body: formData }
+      )
 
-      const isImage = file.type.startsWith('image/')
+      const finalIsImage = isImage || file.type.startsWith('image/')
       const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
       const tempMessage: ChatMessage = {
         id: tempId,
         chatId: isGroup ? null : activeId,
         groupId: isGroup ? activeId : null,
-        content: isImage ? '📷 Photo' : `📎 ${file.name}`,
-        type: isImage ? 'image' : 'file',
+        content: finalIsImage ? '📷 Photo' : `📎 ${file.name}`,
+        type: finalIsImage ? 'image' : 'file',
         fileUrl: uploadRes.url,
         fileName: uploadRes.fileName,
         fileSize: uploadRes.fileSize,
@@ -331,38 +383,38 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
         read: false,
         createdAt: new Date().toISOString(),
         sender: {
-          id: currentUser.id,
-          username: currentUser.username,
-          displayName: currentUser.displayName,
-          avatarColor: currentUser.avatarColor,
+          id: currentUser.id, username: currentUser.username,
+          displayName: currentUser.displayName, avatarColor: currentUser.avatarColor,
         },
         pending: true,
+        silent: silentSend,
+        replyToId: replyTo?.id,
       }
       addMessage(activeId, tempMessage)
 
       const body = isGroup && group
-        ? { groupId: activeId, content: tempMessage.content, type: tempMessage.type, fileUrl: uploadRes.url, fileName: uploadRes.fileName, fileSize: uploadRes.fileSize, tempId }
-        : { chatId: activeId, receiverId: otherUser!.id, content: tempMessage.content, type: tempMessage.type, fileUrl: uploadRes.url, fileName: uploadRes.fileName, fileSize: uploadRes.fileSize, tempId }
+        ? { groupId: activeId, content: tempMessage.content, type: tempMessage.type,
+            fileUrl: uploadRes.url, fileName: uploadRes.fileName, fileSize: uploadRes.fileSize,
+            replyToId: replyTo?.id, silent: silentSend, tempId }
+        : { chatId: activeId, receiverId: otherUser!.id, content: tempMessage.content, type: tempMessage.type,
+            fileUrl: uploadRes.url, fileName: uploadRes.fileName, fileSize: uploadRes.fileSize,
+            replyToId: replyTo?.id, silent: silentSend, tempId }
 
-      const data = await apiFetch<{ message: ChatMessage; memberIds?: string[] }>(`/api/messages`, {
-        method: 'POST',
-        body: JSON.stringify(body),
-      })
+      const data = await apiFetch<{ message: ChatMessage; memberIds?: string[] }>(
+        '/api/messages', { method: 'POST', body: JSON.stringify(body) }
+      )
       updateMessage(activeId, tempId, data.message)
 
-      // Broadcast for group
-      if (isGroup) {
+      if (isGroup && data.memberIds?.length) {
         const socket = (window as any).__zapchat_socket
-        if (socket && data.memberIds?.length > 0) {
+        if (socket) {
           socket.emit('group:message:send', {
-            messageId: data.message.id,
-            groupId: activeId,
-            senderId: currentUser.id,
-            memberIds: data.memberIds,
-            payload: data.message,
+            messageId: data.message.id, groupId: activeId,
+            senderId: currentUser.id, memberIds: data.memberIds, payload: data.message,
           })
         }
       }
+      setReplyTo(null)
     } catch (err: any) {
       toast.error(err.message || 'Upload failed')
     } finally {
@@ -370,18 +422,220 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
     }
   }
 
-  const handleDeleteMessage = async (messageId: string) => {
+  const handleVoiceSend = async (audioData: {
+    fileUrl: string; fileName: string; fileSize: number; duration: number; waveform: number[]
+  }) => {
+    if (!activeId || !currentUser || !activeConversation) return
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    const tempMessage: ChatMessage = {
+      id: tempId,
+      chatId: isGroup ? null : activeId,
+      groupId: isGroup ? activeId : null,
+      content: '🎤 Voice message',
+      type: 'voice',
+      fileUrl: audioData.fileUrl,
+      fileName: audioData.fileName,
+      fileSize: audioData.fileSize,
+      audioDuration: audioData.duration,
+      audioWaveform: JSON.stringify(audioData.waveform),
+      senderId: currentUser.id,
+      receiverId: isGroup ? null : otherUser?.id,
+      read: false,
+      createdAt: new Date().toISOString(),
+      sender: {
+        id: currentUser.id, username: currentUser.username,
+        displayName: currentUser.displayName, avatarColor: currentUser.avatarColor,
+      },
+      pending: true,
+      silent: silentSend,
+      replyToId: replyTo?.id,
+    }
+    addMessage(activeId, tempMessage)
+
+    const body = isGroup && group
+      ? { groupId: activeId, content: tempMessage.content, type: 'voice',
+          fileUrl: audioData.fileUrl, fileName: audioData.fileName, fileSize: audioData.fileSize,
+          audioDuration: audioData.duration, audioWaveform: JSON.stringify(audioData.waveform),
+          replyToId: replyTo?.id, silent: silentSend, tempId }
+      : { chatId: activeId, receiverId: otherUser!.id, content: tempMessage.content, type: 'voice',
+          fileUrl: audioData.fileUrl, fileName: audioData.fileName, fileSize: audioData.fileSize,
+          audioDuration: audioData.duration, audioWaveform: JSON.stringify(audioData.waveform),
+          replyToId: replyTo?.id, silent: silentSend, tempId }
+
+    try {
+      const data = await apiFetch<{ message: ChatMessage; memberIds?: string[] }>(
+        '/api/messages', { method: 'POST', body: JSON.stringify(body) }
+      )
+      updateMessage(activeId, tempId, data.message)
+      if (isGroup && data.memberIds?.length) {
+        const socket = (window as any).__zapchat_socket
+        if (socket) {
+          socket.emit('group:message:send', {
+            messageId: data.message.id, groupId: activeId,
+            senderId: currentUser.id, memberIds: data.memberIds, payload: data.message,
+          })
+        }
+      }
+      setReplyTo(null)
+    } catch (e: any) {
+      toast.error(e.message || 'Failed to send voice message')
+    }
+  }
+
+  const handleToggleReaction = async (messageId: string, emoji: string) => {
+    if (!currentUser) return
+    try {
+      const data = await apiFetch<{ action: 'added' | 'removed'; emoji: string }>(
+        '/api/reactions',
+        { method: 'POST', body: JSON.stringify({ messageId, emoji }) }
+      )
+      toggleReactionLocal(messageId, emoji, currentUser.id, data.action)
+
+      // Broadcast via WS
+      const socket = (window as any).__zapchat_socket
+      if (socket) {
+        // Determine recipientIds
+        const msg = messages.find((m) => m.id === messageId)
+        const recipientIds: string[] = []
+        if (msg?.receiverId) recipientIds.push(msg.receiverId)
+        if (msg?.groupId) {
+          const g = useChatStore.getState().groups.find((x) => x.id === msg.groupId)
+          if (g) {
+            g.members.forEach((m) => {
+              if (m.user.id !== currentUser.id) recipientIds.push(m.user.id)
+            })
+          }
+        }
+        socket.emit('reaction:toggle', {
+          messageId, emoji, userId: currentUser.id,
+          chatId: msg?.chatId, groupId: msg?.groupId, channelId: msg?.channelId,
+          receiverIds: recipientIds, action: data.action,
+        })
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Reaction failed')
+    }
+  }
+
+  const handleEditMessage = (msg: ChatMessage) => {
+    setEditingMessage(msg)
+    setInput(msg.content)
+  }
+
+  const handlePinMessage = async (msg: ChatMessage) => {
     if (!activeId) return
     try {
-      await apiFetch(`/api/messages?id=${messageId}`, { method: 'DELETE' })
-      useChatStore.getState().removeMessage(activeId, messageId)
+      const body = isGroup
+        ? { id: msg.id, groupId: activeId }
+        : { id: msg.id, chatId: activeId }
+      await apiFetch('/api/messages?action=pin', { method: 'PATCH', body: JSON.stringify(body) })
+      setPinnedMessage(activeId, msg)
+      toast.success('Message pinned')
+
+      const socket = (window as any).__zapchat_socket
+      if (socket) {
+        const recipientIds: string[] = []
+        if (msg.receiverId) recipientIds.push(msg.receiverId)
+        if (msg.groupId) {
+          const g = useChatStore.getState().groups.find((x) => x.id === msg.groupId)
+          if (g) g.members.forEach((m) => {
+            if (m.user.id !== currentUser?.id) recipientIds.push(m.user.id)
+          })
+        }
+        socket.emit('message:pinned', {
+          chatId: msg.chatId, groupId: msg.groupId,
+          messageId: msg.id, recipientIds,
+        })
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Pin failed')
+    }
+  }
+
+  const handleUnpinMessage = async () => {
+    if (!activeId) return
+    try {
+      const body = isGroup ? { groupId: activeId } : { chatId: activeId }
+      await apiFetch('/api/messages?action=unpin', { method: 'PATCH', body: JSON.stringify(body) })
+      setPinnedMessage(activeId, null)
+      toast.success('Message unpinned')
+
+      const socket = (window as any).__zapchat_socket
+      if (socket) {
+        const recipientIds: string[] = []
+        if (otherUser) recipientIds.push(otherUser.id)
+        if (group) group.members.forEach((m) => {
+          if (m.user.id !== currentUser?.id) recipientIds.push(m.user.id)
+        })
+        socket.emit('message:unpinned', {
+          chatId: !isGroup ? activeId : undefined,
+          groupId: isGroup ? activeId : undefined,
+          recipientIds,
+        })
+      }
+    } catch (e: any) {
+      toast.error(e.message || 'Unpin failed')
+    }
+  }
+
+  const handleDeleteForBoth = async (msg: ChatMessage) => {
+    if (!confirm('Delete this message for everyone? This cannot be undone.')) return
+    try {
+      const data = await apiFetch<{ recipientIds: string[]; messageId: string }>(
+        `/api/messages?id=${msg.id}&action=both`,
+        { method: 'DELETE' }
+      )
+      removeMessage(activeId!, msg.id)
       toast.success('Message deleted')
+
+      const socket = (window as any).__zapchat_socket
+      if (socket && data.recipientIds?.length) {
+        socket.emit('message:deleted', {
+          messageId: msg.id,
+          chatId: msg.chatId, groupId: msg.groupId, channelId: msg.channelId,
+          recipientIds: data.recipientIds,
+        })
+      }
     } catch (e: any) {
       toast.error(e.message || 'Delete failed')
     }
   }
 
-  // -------- Empty state --------
+  const handleStartCall = async (callType: 'audio' | 'video') => {
+    if (!otherUser || !currentUser) return
+    try {
+      const data = await apiFetch<{ callId: string }>(`/api/calls?action=initiate`, {
+        method: 'POST',
+        body: JSON.stringify({ receiverId: otherUser.id, callType }),
+      })
+      const socket = (window as any).__zapchat_socket
+      if (socket) {
+        socket.emit('call:invite', {
+          callId: data.callId,
+          callerId: currentUser.id,
+          callerName: currentUser.displayName,
+          callerAvatarColor: currentUser.avatarColor,
+          receiverId: otherUser.id,
+          callType,
+        })
+      }
+      setCall({
+        callId: data.callId,
+        otherUserId: otherUser.id,
+        otherUserName: otherUser.displayName,
+        otherUserAvatarColor: otherUser.avatarColor,
+        callType,
+        direction: 'outgoing',
+        status: 'ringing',
+        isMuted: false,
+        isVideoOff: false,
+      })
+    } catch (e: any) {
+      toast.error(e.message || 'Call failed')
+    }
+  }
+
+  // Empty state
   if (!activeConversation) {
     return (
       <div className="flex-1 flex items-center justify-center bg-background chat-pattern-bg">
@@ -391,14 +645,14 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
           </div>
           <h2 className="text-xl font-bold mb-2">Welcome to ZapChat</h2>
           <p className="text-sm text-muted-foreground">
-            Select a conversation from the sidebar, start a new chat, or create a group.
+            Select a conversation, start a new chat, group, or channel.
           </p>
         </div>
       </div>
     )
   }
 
-  // -------- Header content --------
+  // Header content
   const headerContent = isGroup && group ? (
     <>
       <Avatar name={group.name} color={group.avatarColor} size="md" />
@@ -406,14 +660,11 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
         <p className="font-semibold truncate">{group.name}</p>
         <p className="text-xs text-muted-foreground truncate">
           {isTyping ? (
-            <span className="text-primary inline-flex items-center gap-1">
-              {typeof isTyping === 'object' && isTyping ? `${isTyping.username} is typing` : 'typing'}
-              <span className="inline-flex">
-                <span className="animate-pulse-dot" style={{ animationDelay: '0s' }}>.</span>
-                <span className="animate-pulse-dot" style={{ animationDelay: '0.2s' }}>.</span>
-                <span className="animate-pulse-dot" style={{ animationDelay: '0.4s' }}>.</span>
-              </span>
+            <span className="text-primary">
+              {typeof isTyping === 'object' && isTyping ? `${(isTyping as any).username} is typing...` : 'typing...'}
             </span>
+          ) : group.slowModeSecs ? (
+            <span>Slow mode: {group.slowModeSecs}s · {group.members.length} members</span>
           ) : (
             <span>{group.members.length} members</span>
           )}
@@ -432,14 +683,7 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
         <p className="font-semibold truncate">{otherUser.displayName}</p>
         <p className="text-xs text-muted-foreground truncate">
           {isTyping ? (
-            <span className="text-primary inline-flex items-center gap-1">
-              typing
-              <span className="inline-flex">
-                <span className="animate-pulse-dot" style={{ animationDelay: '0s' }}>.</span>
-                <span className="animate-pulse-dot" style={{ animationDelay: '0.2s' }}>.</span>
-                <span className="animate-pulse-dot" style={{ animationDelay: '0.4s' }}>.</span>
-              </span>
-            </span>
+            <span className="text-primary">typing...</span>
           ) : isOnline ? (
             <span className="text-green-500">online</span>
           ) : (
@@ -451,12 +695,11 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
   ) : null
 
   const headerClick = () => {
-    if (isGroup && group) {
-      onOpenGroupInfo(group.id)
-    } else if (otherUser) {
-      onOpenUserProfile(otherUser.id)
-    }
+    if (isGroup && group) onOpenGroupInfo(group.id)
+    else if (otherUser) onOpenUserProfile(otherUser.id)
   }
+
+  const pinned = activeId ? pinnedMessages[activeId] : null
 
   return (
     <div className="flex-1 flex flex-col bg-background">
@@ -466,10 +709,7 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
           <ArrowLeft className="h-5 w-5" />
         </Button>
 
-        <button
-          onClick={headerClick}
-          className="flex items-center gap-3 flex-1 min-w-0 hover:opacity-90 transition-opacity text-left"
-        >
+        <button onClick={headerClick} className="flex items-center gap-3 flex-1 min-w-0 hover:opacity-90 transition-opacity text-left">
           {isGroup && group ? (
             <div
               className="relative h-10 w-10 rounded-full flex items-center justify-center text-white ring-2 ring-background shrink-0"
@@ -482,12 +722,16 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
         </button>
 
         <div className="flex items-center gap-1">
-          <Button variant="ghost" size="icon" className="hidden sm:flex rounded-full" disabled title="Voice calls coming soon">
-            <Phone className="h-5 w-5" />
-          </Button>
-          <Button variant="ghost" size="icon" className="hidden sm:flex rounded-full" disabled title="Video calls coming soon">
-            <Video className="h-5 w-5" />
-          </Button>
+          {!isGroup && otherUser && (
+            <>
+              <Button variant="ghost" size="icon" className="rounded-full" onClick={() => handleStartCall('audio')} title="Voice call">
+                <Phone className="h-5 w-5" />
+              </Button>
+              <Button variant="ghost" size="icon" className="rounded-full" onClick={() => handleStartCall('video')} title="Video call">
+                <Video className="h-5 w-5" />
+              </Button>
+            </>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon" className="rounded-full">
@@ -496,19 +740,30 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={headerClick}>
-                {isGroup ? 'View group info' : 'View profile'}
+                {isGroup ? 'Group info' : 'View profile'}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuItem
-                className="text-destructive"
-                onClick={() => toast.info('Clear chat — coming soon')}
-              >
+              <DropdownMenuItem className="text-destructive" onClick={() => toast.info('Clear chat — coming soon')}>
                 Clear chat
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
         </div>
       </div>
+
+      {/* Pinned message bar */}
+      {pinned && (
+        <div className="px-3 py-2 border-b border-border bg-primary/5 flex items-center gap-2">
+          <Pin className="h-4 w-4 text-primary shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] text-muted-foreground uppercase tracking-wide">Pinned</p>
+            <p className="text-xs truncate">{pinned.content}</p>
+          </div>
+          <button onClick={handleUnpinMessage} className="text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-hidden chat-pattern-bg relative">
@@ -528,12 +783,8 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
                   const isOwn = msg.senderId === currentUser?.id
                   const prevMsg = messages[idx - 1]
                   const nextMsg = messages[idx + 1]
-                  const showAvatar = !isOwn && (
-                    !prevMsg || prevMsg.senderId !== msg.senderId
-                  )
-                  const showSenderName = isGroup && !isOwn && (
-                    !prevMsg || prevMsg.senderId !== msg.senderId
-                  )
+                  const showAvatar = !isOwn && (!prevMsg || prevMsg.senderId !== msg.senderId)
+                  const showSenderName = isGroup && !isOwn && (!prevMsg || prevMsg.senderId !== msg.senderId)
                   const isLastInGroup = !nextMsg || nextMsg.senderId !== msg.senderId
                   return (
                     <MessageBubble
@@ -545,7 +796,14 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
                       isLastInGroup={isLastInGroup}
                       otherUser={otherUser}
                       isGroup={!!isGroup}
-                      onDelete={() => handleDeleteMessage(msg.id)}
+                      currentUser={currentUser}
+                      reactions={reactionsByMessage[msg.id] || []}
+                      onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                      onReply={() => setReplyTo(msg)}
+                      onEdit={() => handleEditMessage(msg)}
+                      onPin={() => handlePinMessage(msg)}
+                      onDelete={() => handleDeleteForBoth(msg)}
+                      replyToMessage={messages.find((m) => m.id === msg.replyToId)}
                     />
                   )
                 })
@@ -566,6 +824,34 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
           </div>
         </ScrollArea>
       </div>
+
+      {/* Reply preview */}
+      {replyTo && (
+        <div className="px-3 py-2 border-t border-border bg-muted/30 flex items-center gap-2">
+          <Reply className="h-4 w-4 text-primary shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] text-primary uppercase tracking-wide">Replying to</p>
+            <p className="text-xs truncate">{replyTo.content}</p>
+          </div>
+          <button onClick={() => setReplyTo(null)} className="text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+
+      {/* Edit preview */}
+      {editingMessage && (
+        <div className="px-3 py-2 border-t border-border bg-amber-500/10 flex items-center gap-2">
+          <Edit2 className="h-4 w-4 text-amber-600 shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-[10px] text-amber-600 uppercase tracking-wide">Editing</p>
+            <p className="text-xs truncate">{editingMessage.content}</p>
+          </div>
+          <button onClick={() => setEditingMessage(null)} className="text-muted-foreground hover:text-foreground">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       {/* Emoji picker */}
       <AnimatePresence>
@@ -595,46 +881,64 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
       {/* Input */}
       <div className="p-3 sm:p-4 border-t border-border bg-card/80 backdrop-blur-md shrink-0">
         <div className="max-w-3xl mx-auto flex items-center gap-2">
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            onChange={handleFileSelect}
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            className="rounded-full shrink-0"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={isUploading}
-            title="Attach file"
-          >
-            {isUploading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Paperclip className="h-5 w-5" />}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="rounded-full shrink-0"
-            onClick={() => setShowEmoji((s) => !s)}
-            title="Emoji"
-          >
+          <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => handleFileSelect(e, false)} />
+          <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => handleFileSelect(e, true)} />
+
+          {/* Attach menu */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon" className="rounded-full shrink-0" disabled={isUploading}>
+                {isUploading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Paperclip className="h-5 w-5" />}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent side="top" align="start">
+              <DropdownMenuItem onClick={() => imageInputRef.current?.click()}>
+                <ImageIcon className="h-4 w-4 mr-2" />
+                Photo
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
+                <FileIcon className="h-4 w-4 mr-2" />
+                File
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          {/* Voice recorder (shown when input empty) */}
+          {!input.trim() && (
+            <VoiceRecorder onSend={handleVoiceSend} />
+          )}
+
+          <Button variant="ghost" size="icon" className="rounded-full shrink-0" onClick={() => setShowEmoji((s) => !s)}>
             <Smile className="h-5 w-5" />
           </Button>
+
+          {/* Silent toggle */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`rounded-full shrink-0 ${silentSend ? 'text-primary bg-primary/10' : ''}`}
+            onClick={() => setSilentSend(!silentSend)}
+            title={silentSend ? 'Silent send on' : 'Silent send off'}
+          >
+            {silentSend ? <BellOff className="h-5 w-5" /> : <Bell className="h-5 w-5" />}
+          </Button>
+
           <Input
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder={isGroup ? `Message ${group?.name || 'group'}` : 'Type a message...'}
+            placeholder={editingMessage ? 'Edit message...' : isGroup ? `Message ${group?.name || 'group'}` : 'Type a message...'}
             className="flex-1 h-11 bg-background border-border"
             disabled={isUploading}
           />
+
           <Button
             onClick={handleSend}
             disabled={!input.trim() || isUploading}
             className="h-11 w-11 rounded-full p-0 shrink-0 shadow-lg shadow-primary/30"
-            title="Send"
+            title={editingMessage ? 'Save edit' : 'Send'}
           >
-            <Send className="h-5 w-5" />
+            {editingMessage ? <Check className="h-5 w-5" /> : <Send className="h-5 w-5" />}
           </Button>
         </div>
       </div>
@@ -646,14 +950,9 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
 // MessageBubble
 // ============================================================
 function MessageBubble({
-  message,
-  isOwn,
-  showAvatar,
-  showSenderName,
-  isLastInGroup,
-  otherUser,
-  isGroup,
-  onDelete,
+  message, isOwn, showAvatar, showSenderName, isLastInGroup,
+  otherUser, isGroup, currentUser, reactions, onToggleReaction,
+  onReply, onEdit, onPin, onDelete, replyToMessage,
 }: {
   message: ChatMessage
   isOwn: boolean
@@ -662,40 +961,58 @@ function MessageBubble({
   isLastInGroup: boolean
   otherUser: any
   isGroup: boolean
+  currentUser: any
+  reactions: Reaction[]
+  onToggleReaction: (emoji: string) => void
+  onReply: () => void
+  onEdit: () => void
+  onPin: () => void
   onDelete: () => void
+  replyToMessage?: ChatMessage
 }) {
   const [imageOpen, setImageOpen] = useState(false)
-  const senderName = message.sender?.displayName || ''
+  const [showReactionPicker, setShowReactionPicker] = useState(false)
+  const [bubbleRef, setBubbleRef] = useState<DOMRect | null>(null)
+  const senderName = message.sender?.displayName || (message.isAnonymous ? 'Anonymous' : 'Unknown')
   const senderColor = message.sender?.avatarColor || '#6366f1'
 
   return (
-    <div className={cn('flex items-end gap-2 group', isOwn ? 'justify-end' : 'justify-start')}>
+    <div className={`flex items-end gap-2 group ${isOwn ? 'justify-end' : 'justify-start'}`}>
       {!isOwn && (
         <div className="w-8 shrink-0">
-          {showAvatar && (
+          {showAvatar && !message.isAnonymous && (
             <Avatar name={senderName} color={senderColor} size="sm" />
           )}
         </div>
       )}
 
-      <div
-        className={cn(
-          'max-w-[80%] sm:max-w-[70%] relative',
-          isOwn ? 'items-end' : 'items-start',
-          'flex flex-col'
-        )}
-      >
-        {showSenderName && !isOwn && (
-          <span
-            className="text-xs font-medium mb-0.5 ml-1"
-            style={{ color: senderColor }}
-          >
+      <div className={`max-w-[80%] sm:max-w-[70%] relative flex flex-col ${isOwn ? 'items-end' : 'items-start'}`}>
+        {showSenderName && !isOwn && !message.isAnonymous && (
+          <span className="text-xs font-medium mb-0.5 ml-1" style={{ color: senderColor }}>
             {senderName}
           </span>
         )}
+
+        {/* Reply preview */}
+        {replyToMessage && (
+          <div
+            className={`mb-1 px-3 py-1.5 rounded-lg border-l-2 text-xs max-w-full ${
+              isOwn ? 'bg-primary-foreground/10 border-primary-foreground/50' : 'bg-muted border-primary'
+            }`}
+          >
+            <p className="font-semibold text-[10px] opacity-70">
+              {replyToMessage.senderId === currentUser?.id
+                ? 'You'
+                : replyToMessage.sender?.displayName || 'Unknown'}
+            </p>
+            <p className="truncate opacity-80">{replyToMessage.content}</p>
+          </div>
+        )}
+
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <div
+              ref={(el) => { /* store for picker positioning */ }}
               className={cn(
                 'px-3 py-2 rounded-2xl cursor-pointer relative transition-all animate-message-in',
                 isOwn
@@ -703,24 +1020,50 @@ function MessageBubble({
                   : 'bg-card border border-border ' + (isLastInGroup ? 'rounded-bl-sm' : ''),
                 message.pending && 'opacity-70'
               )}
+              onClick={(e) => {
+                // Right-click context menu style
+                if (e.detail === 2) {
+                  // Double-click for quick reaction
+                  onToggleReaction('❤️')
+                }
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault()
+                const target = e.currentTarget
+                setBubbleRef(target.getBoundingClientRect())
+                setShowReactionPicker(true)
+              }}
             >
+              {/* Silent indicator */}
+              {message.silent && (
+                <span className="absolute -top-2 -right-2 bg-background border border-border rounded-full p-0.5" title="Silent message">
+                  <BellOff className="h-3 w-3 text-muted-foreground" />
+                </span>
+              )}
+
               {message.type === 'image' && message.fileUrl ? (
                 <div className="space-y-1">
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setImageOpen(true) }}
-                    className="block"
-                  >
+                  <button onClick={(e) => { e.stopPropagation(); setImageOpen(true) }} className="block">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={message.fileUrl}
-                      alt={message.fileName || 'image'}
-                      className="rounded-lg max-h-64 max-w-full object-cover"
-                    />
+                    <img src={message.fileUrl} alt={message.fileName || 'image'} className="rounded-lg max-h-64 max-w-full object-cover" />
                   </button>
                   {message.content && message.content !== '📷 Photo' && (
-                    <p className="text-sm">{message.content}</p>
+                    <MarkdownRenderer content={message.content} className="text-sm" />
                   )}
                 </div>
+              ) : message.type === 'voice' ? (
+                <div className="min-w-[240px]">
+                  <AudioPlayer
+                    src={message.fileUrl!}
+                    duration={message.audioDuration}
+                    waveform={message.audioWaveform}
+                    senderColor={senderColor}
+                    isOwn={isOwn}
+                  />
+                </div>
+              ) : message.type === 'gif' && message.gifUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={message.gifUrl} alt={message.gifId || 'gif'} className="rounded-lg max-h-64 max-w-full" />
               ) : message.type === 'file' && message.fileUrl ? (
                 <a
                   href={message.fileUrl}
@@ -733,15 +1076,14 @@ function MessageBubble({
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="text-sm font-medium truncate">{message.fileName}</p>
-                    {message.fileSize && (
-                      <p className="text-xs opacity-70">{formatBytes(message.fileSize)}</p>
-                    )}
+                    {message.fileSize && <p className="text-xs opacity-70">{formatBytes(message.fileSize)}</p>}
                   </div>
                 </a>
               ) : (
-                <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
+                <MarkdownRenderer content={message.content} className="text-sm" />
               )}
 
+              {/* Metadata footer */}
               <div className={cn(
                 'flex items-center gap-1 mt-1 text-[10px]',
                 isOwn ? 'text-primary-foreground/70' : 'text-muted-foreground'
@@ -750,6 +1092,7 @@ function MessageBubble({
                   <Loader2 className="h-3 w-3 animate-spin" />
                 ) : (
                   <>
+                    {message.editedAt && <span className="italic">edited</span>}
                     <span>{formatTimeFull(message.createdAt)}</span>
                     {isOwn && (
                       message.read ? <CheckCheck className="h-3 w-3" /> : <Check className="h-3 w-3" />
@@ -760,39 +1103,76 @@ function MessageBubble({
             </div>
           </DropdownMenuTrigger>
           <DropdownMenuContent align={isOwn ? 'end' : 'start'}>
-            {isOwn && (
-              <>
-                <DropdownMenuItem onClick={onDelete} className="text-destructive">
-                  Delete message
-                </DropdownMenuItem>
-                <DropdownMenuSeparator />
-              </>
-            )}
-            <DropdownMenuItem
-              onClick={() => navigator.clipboard?.writeText(message.content)}
-            >
+            <DropdownMenuItem onClick={() => onToggleReaction('❤️')}>
+              <span className="mr-2">❤️</span> React
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onReply}>
+              <Reply className="h-4 w-4 mr-2" />
+              Reply
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={onPin}>
+              <Pin className="h-4 w-4 mr-2" />
+              Pin
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => navigator.clipboard?.writeText(message.content)}>
+              <Copy className="h-4 w-4 mr-2" />
               Copy text
             </DropdownMenuItem>
+            {isOwn && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={onEdit}>
+                  <Edit2 className="h-4 w-4 mr-2" />
+                  Edit
+                </DropdownMenuItem>
+                <DropdownMenuItem className="text-destructive" onClick={onDelete}>
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete for everyone
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {/* Reactions */}
+        {reactions.length > 0 && (
+          <div className={`flex flex-wrap gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+            {reactions.map((r) => (
+              <button
+                key={r.emoji}
+                onClick={() => onToggleReaction(r.emoji)}
+                className={cn(
+                  'flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[10px] border transition-all',
+                  r.mine
+                    ? 'bg-primary text-primary-foreground border-primary'
+                    : 'bg-card border-border hover:bg-accent'
+                )}
+                title={r.users.map((u) => u.displayName).join(', ')}
+              >
+                <span>{r.emoji}</span>
+                <span className="font-medium">{r.count}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Reaction picker */}
+        <ReactionPicker
+          open={showReactionPicker}
+          onClose={() => setShowReactionPicker(false)}
+          onSelect={onToggleReaction}
+          anchorRect={bubbleRef}
+        />
       </div>
 
       {/* Image preview modal */}
       {imageOpen && message.fileUrl && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
-          onClick={() => setImageOpen(false)}
-        >
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4" onClick={() => setImageOpen(false)}>
           <button className="absolute top-4 right-4 text-white/80 hover:text-white p-2">
             <X className="h-6 w-6" />
           </button>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={message.fileUrl}
-            alt={message.fileName || 'image'}
-            className="max-h-[90vh] max-w-full object-contain rounded-lg"
-            onClick={(e) => e.stopPropagation()}
-          />
+          <img src={message.fileUrl} alt={message.fileName || 'image'} className="max-h-[90vh] max-w-full object-contain rounded-lg" onClick={(e) => e.stopPropagation()} />
         </div>
       )}
     </div>

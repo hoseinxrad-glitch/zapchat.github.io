@@ -28,34 +28,65 @@ model User {
   chatsAsUser2     Chat[]      @relation("ChatUser2")
   groupMemberships GroupMember[]
   createdGroups   Group[]     @relation("GroupCreator")
+  ownedChannels   Channel[]   @relation("ChannelCreator")
+  channelMemberships ChannelMember[]
+  stories         Story[]
+  storyViews      StoryView[]
+  reactions       Reaction[]
+  bots            Bot[]
+  chatSettings    ChatUserSettings[]
 
   @@index([username])
 }
 
 model Chat {
-  id        String   @id @default(cuid())
-  user1Id   String
-  user2Id   String
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id              String   @id @default(cuid())
+  user1Id         String
+  user2Id         String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
   user1     User     @relation("ChatUser1", fields: [user1Id], references: [id])
   user2     User     @relation("ChatUser2", fields: [user2Id], references: [id])
   messages  Message[]
+  settings  ChatUserSettings[]
 
   @@unique([user1Id, user2Id])
   @@index([user1Id])
   @@index([user2Id])
 }
 
+// Per-user settings for direct chats (archive/mute/auto-delete from each side)
+model ChatUserSettings {
+  id              String   @id @default(cuid())
+  chatId          String
+  userId          String
+  archived        Boolean  @default(false)
+  muted           Boolean  @default(false)
+  autoDeleteSecs  Int      @default(0) // 0 = off, otherwise seconds
+  pinnedMessageId String?
+  updatedAt       DateTime @updatedAt
+
+  chat            Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId])
+  @@index([userId])
+}
+
 model Group {
-  id           String   @id @default(cuid())
-  name         String
-  description  String   @default("")
-  avatarColor  String   @default("#8b5cf6")
-  creatorId    String
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                    String   @id @default(cuid())
+  name                  String
+  description           String   @default("")
+  avatarColor           String   @default("#8b5cf6")
+  creatorId             String
+  slowModeSecs          Int      @default(0) // 0 = off
+  allowAnonymousAdmins  Boolean  @default(false)
+  isSupergroup          Boolean  @default(false) // allows >10 members
+  isChannel             Boolean  @default(false) // only admins can post
+  pinnedMessageId       String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   creator      User     @relation("GroupCreator", fields: [creatorId], references: [id])
   members      GroupMember[]
@@ -65,11 +96,16 @@ model Group {
 }
 
 model GroupMember {
-  id        String   @id @default(cuid())
-  groupId   String
-  userId    String
-  role      String   @default("member") // admin, member
-  joinedAt  DateTime @default(now())
+  id              String   @id @default(cuid())
+  groupId         String
+  userId          String
+  role            String   @default("member") // owner, admin, member
+  joinedAt        DateTime @default(now())
+  // Per-member settings
+  archived        Boolean  @default(false)
+  muted           Boolean  @default(false)
+  autoDeleteSecs  Int      @default(0)
+  isAnonymous     Boolean  @default(false) // posts anonymously in this group
 
   group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -80,26 +116,154 @@ model GroupMember {
 }
 
 model Message {
-  id           String   @id @default(cuid())
-  content      String
-  type         String   @default("text") // text, image, file
-  fileUrl      String?
-  fileName     String?
-  fileSize     Int?
-  senderId     String
-  receiverId   String?  // null for group messages
-  chatId       String?  // null for group messages
-  groupId      String?  // null for direct messages
-  read         Boolean  @default(false)
-  createdAt    DateTime @default(now())
+  id              String   @id @default(cuid())
+  content         String
+  type            String   @default("text") // text, image, file, voice, gif
+  fileUrl         String?
+  fileName        String?
+  fileSize        Int?
+  // Voice message specific
+  audioDuration   Int? // seconds
+  audioWaveform   String? // comma-separated amplitude values, JSON string
+  // GIF specific
+  gifId           String?
+  gifUrl          String?
+  // Reply / edit / pin
+  replyToId       String? // references another Message
+  editedAt        DateTime?
+  // Sender
+  senderId        String
+  receiverId      String?  // null for group/channel messages
+  chatId          String?
+  groupId         String?
+  channelId       String?
+  // Status
+  read            Boolean  @default(false)
+  // Send without sound (silent notification)
+  silent          Boolean  @default(false)
+  // Anonymous (group only) - hide sender identity
+  isAnonymous     Boolean  @default(false)
+  createdAt       DateTime @default(now())
 
-  sender       User     @relation("SenderMessages", fields: [senderId], references: [id])
-  receiver     User?    @relation("ReceiverMessages", fields: [receiverId], references: [id])
-  chat         Chat?    @relation(fields: [chatId], references: [id])
-  group        Group?   @relation(fields: [groupId], references: [id])
+  sender          User     @relation("SenderMessages", fields: [senderId], references: [id])
+  receiver        User?    @relation("ReceiverMessages", fields: [receiverId], references: [id])
+  chat            Chat?    @relation(fields: [chatId], references: [id])
+  group           Group?   @relation(fields: [groupId], references: [id])
+  channel         Channel? @relation(fields: [channelId], references: [id])
+  replyTo         Message? @relation("MessageReply", fields: [replyToId], references: [id])
+  replies         Message[] @relation("MessageReply")
+  reactions       Reaction[]
 
   @@index([chatId])
   @@index([groupId])
+  @@index([channelId])
   @@index([senderId])
   @@index([receiverId])
+  @@index([replyToId])
+}
+
+model Reaction {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId, emoji])
+  @@index([messageId])
+  @@index([userId])
+}
+
+// ============================================================
+// Channels (Telegram-like broadcast)
+// ============================================================
+model Channel {
+  id           String   @id @default(cuid())
+  username     String   @unique // @channel_name
+  name         String
+  description String   @default("")
+  avatarColor  String   @default("#0ea5e9")
+  creatorId    String
+  isPrivate   Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  creator     User     @relation("ChannelCreator", fields: [creatorId], references: [id])
+  members     ChannelMember[]
+  posts       Message[]
+
+  @@index([creatorId])
+}
+
+model ChannelMember {
+  id        String   @id @default(cuid())
+  channelId String
+  userId    String
+  role      String   @default("subscriber") // owner, admin, subscriber
+  joinedAt  DateTime @default(now())
+
+  channel   Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([channelId, userId])
+  @@index([channelId])
+  @@index([userId])
+}
+
+// ============================================================
+// Stories (24h auto-expire)
+// ============================================================
+model Story {
+  id         String   @id @default(cuid())
+  userId     String
+  type       String   @default("image") // image, video, text
+  mediaUrl   String?
+  text       String?
+  bgColor    String   @default("#8b5cf6")
+  duration   Int      @default(24) // hours
+  views      Int      @default(0)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  viewers    StoryView[]
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model StoryView {
+  id        String   @id @default(cuid())
+  storyId   String
+  userId    String
+  viewedAt  DateTime @default(now())
+
+  story     Story    @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([storyId, userId])
+  @@index([storyId])
+}
+
+// ============================================================
+// Bots (Telegram-like bot accounts)
+// ============================================================
+model Bot {
+  id          String   @id @default(cuid())
+  username    String   @unique // @my_bot
+  displayName String
+  description String   @default("")
+  avatarColor String   @default("#22c55e")
+  token       String   @unique // secret token for webhook auth
+  ownerId     String
+  webhookUrl  String?  // URL to forward messages to
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  owner       User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  @@index([ownerId])
 }

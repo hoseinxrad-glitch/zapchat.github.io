@@ -3,6 +3,7 @@
 import { useEffect, useRef } from 'react'
 import { io, Socket } from 'socket.io-client'
 import { useChatStore } from '@/lib/chat-store'
+import { useExtendedStore } from '@/lib/extended-store'
 import { apiFetch, type AuthUser } from '@/lib/chat-utils'
 import type { ChatMessage } from '@/lib/chat-store'
 
@@ -317,6 +318,142 @@ export function useChatSocket() {
           setChats(all)
         })
         .catch(() => {})
+    })
+
+    // -------- Reactions (NEW) --------
+    socket.on('reaction:updated', (data: {
+      messageId: string
+      emoji: string
+      userId: string
+      action: 'added' | 'removed'
+      chatId?: string
+      groupId?: string
+      channelId?: string
+    }) => {
+      // Update local reactions
+      const { toggleReactionLocal } = useExtendedStore.getState()
+      toggleReactionLocal(data.messageId, data.emoji, data.userId, data.action)
+    })
+
+    // -------- Message edited (NEW) --------
+    socket.on('message:edited', (data: { message: ChatMessage }) => {
+      const msg = data.message
+      // Find the conversation id (chatId or groupId)
+      const convId = msg.chatId || msg.groupId || msg.channelId
+      if (!convId) return
+      const messages = useChatStore.getState().messagesByConversation[convId] || []
+      const updated = messages.map((m) => m.id === msg.id ? { ...msg, pending: false } : m)
+      useChatStore.getState().setMessages(convId, updated)
+      // Update sidebar preview
+      const chat = chatsRef.current.find((c) => c.id === convId)
+      if (chat && chat.lastMessage?.id === msg.id) {
+        useChatStore.getState().upsertChat({ ...chat, lastMessage: msg })
+      }
+    })
+
+    // -------- Message pinned/unpinned (NEW) --------
+    socket.on('message:pinned', (data: {
+      chatId?: string
+      groupId?: string
+      messageId: string
+    }) => {
+      const convId = data.chatId || data.groupId
+      if (!convId) return
+      // Reload messages to get the pinned one
+      const isGroup = !!data.groupId
+      const endpoint = isGroup
+        ? `/api/groups/${convId}/messages?limit=200`
+        : `/api/chats?action=messages&chatId=${convId}&limit=200`
+      apiFetch<{ messages: ChatMessage[] }>(endpoint)
+        .then((d) => {
+          const pinned = d.messages.find((m) => m.id === data.messageId)
+          if (pinned) useExtendedStore.getState().setPinnedMessage(convId, pinned)
+        })
+        .catch(() => {})
+    })
+
+    socket.on('message:unpinned', (data: { chatId?: string, groupId?: string }) => {
+      const convId = data.chatId || data.groupId
+      if (convId) useExtendedStore.getState().setPinnedMessage(convId, null)
+    })
+
+    // -------- Message deleted for both (NEW) --------
+    socket.on('message:deleted', (data: {
+      messageId: string
+      chatId?: string
+      groupId?: string
+      channelId?: string
+    }) => {
+      const convId = data.chatId || data.groupId || data.channelId
+      if (convId) {
+        useChatStore.getState().removeMessage(convId, data.messageId)
+      }
+    })
+
+    // -------- Channel events (NEW) --------
+    socket.on('channel:new-received', (data: { channel: any }) => {
+      useExtendedStore.getState().upsertChannel(data.channel)
+    })
+
+    socket.on('channel:post-received', (data: { channelId: string, message: ChatMessage }) => {
+      // If user is viewing the channel, add the message
+      const active = useExtendedStore.getState().activeChannel
+      if (active?.id === data.channelId) {
+        // Add to messages list (TODO: channel message storage in extended store)
+      }
+    })
+
+    socket.on('channel:event', (data: any) => {
+      // Refresh channels list
+      if (data.type === 'deleted') {
+        useExtendedStore.getState().removeChannel(data.channelId)
+      } else {
+        apiFetch<{ channels: any[] }>('/api/channels?action=list')
+          .then((d) => useExtendedStore.getState().setChannels(d.channels || []))
+          .catch(() => {})
+      }
+    })
+
+    // -------- Story events (NEW) --------
+    socket.on('story:new-received', (data: { story: any }) => {
+      // Reload stories feed
+      apiFetch<{ groups: any[] }>('/api/stories?action=feed')
+        .then((d) => useExtendedStore.getState().setStoryGroups(d.groups || []))
+        .catch(() => {})
+    })
+
+    socket.on('story:viewed', (data: any) => {
+      // Just reload stories feed
+      apiFetch<{ groups: any[] }>('/api/stories?action=feed')
+        .then((d) => useExtendedStore.getState().setStoryGroups(d.groups || []))
+        .catch(() => {})
+    })
+
+    // -------- Voice Calls (NEW) --------
+    socket.on('call:incoming', (data: any) => {
+      useExtendedStore.getState().setCall({
+        callId: data.callId,
+        otherUserId: data.callerId,
+        otherUserName: data.callerName,
+        otherUserAvatarColor: data.callerAvatarColor,
+        callType: data.callType,
+        direction: 'incoming',
+        status: 'ringing',
+        isMuted: false,
+        isVideoOff: false,
+      })
+    })
+
+    socket.on('call:accepted', (data: any) => {
+      useExtendedStore.getState().updateCall({ status: 'connected' })
+    })
+
+    socket.on('call:rejected', (data: any) => {
+      useExtendedStore.getState().setCall(null)
+    })
+
+    socket.on('call:ended', (data: any) => {
+      useExtendedStore.getState().setCall(null)
     })
 
     return () => {

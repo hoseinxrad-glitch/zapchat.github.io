@@ -2,16 +2,68 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getAuthUser } from '@/lib/auth'
 
-// ============================================================
-// GET /api/groups/[id]  - get group info
-// PATCH /api/groups/[id]  - update group (name, description, color) - admin only
-// DELETE /api/groups/[id]  - delete group (creator only) OR leave group (member)
-// ============================================================
+interface Params { params: Promise<{ id: string }> }
 
-interface Params {
-  params: Promise<{ id: string }>
+// PATCH /api/groups/[id]?action=settings
+//   body: { slowModeSecs?, allowAnonymousAdmins?, isSupergroup?, name?, description?, avatarColor? }
+//   (admin only)
+
+export async function PATCH(req: NextRequest, { params }: Params) {
+  const authUser = getAuthUser(req)
+  if (!authUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  const { id } = await params
+  const url = new URL(req.url)
+  const action = url.searchParams.get('action')
+
+  if (action === 'settings') {
+    const membership = await db.groupMember.findUnique({
+      where: { groupId_userId: { groupId: id, userId: authUser.userId } },
+    })
+    if (!membership || membership.role === 'member') {
+      return NextResponse.json({ error: 'Admin only' }, { status: 403 })
+    }
+
+    const body = await req.json()
+    const { slowModeSecs, allowAnonymousAdmins, isSupergroup, name, description, avatarColor } = body
+    const data: any = {}
+
+    if (typeof slowModeSecs === 'number') {
+      if (![0, 10, 30, 60, 300, 900, 3600].includes(slowModeSecs)) {
+        return NextResponse.json({
+          error: 'Invalid slowModeSecs (allowed: 0, 10, 30, 60, 300, 900, 3600)',
+        }, { status: 400 })
+      }
+      data.slowModeSecs = slowModeSecs
+    }
+    if (typeof allowAnonymousAdmins === 'boolean') data.allowAnonymousAdmins = allowAnonymousAdmins
+    if (typeof isSupergroup === 'boolean') data.isSupergroup = isSupergroup
+    if (typeof name === 'string' && name.trim().length >= 2) data.name = name.trim().slice(0, 50)
+    if (typeof description === 'string') data.description = description.slice(0, 200)
+    if (typeof avatarColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(avatarColor)) data.avatarColor = avatarColor
+
+    const group = await db.group.update({ where: { id }, data })
+
+    return NextResponse.json({
+      group: {
+        id: group.id,
+        name: group.name,
+        description: group.description,
+        avatarColor: group.avatarColor,
+        slowModeSecs: group.slowModeSecs,
+        allowAnonymousAdmins: group.allowAnonymousAdmins,
+        isSupergroup: group.isSupergroup,
+        updatedAt: group.updatedAt,
+      },
+    })
+  }
+
+  return NextResponse.json({ error: 'Unknown action' }, { status: 400 })
 }
 
+// ============================================================
+// GET /api/groups/[id]  - get group info (with new fields)
+// ============================================================
 export async function GET(req: NextRequest, { params }: Params) {
   const authUser = getAuthUser(req)
   if (!authUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
@@ -33,7 +85,6 @@ export async function GET(req: NextRequest, { params }: Params) {
 
   if (!group) return NextResponse.json({ error: 'Group not found' }, { status: 404 })
 
-  // Verify membership
   const isMember = group.members.some((m) => m.userId === authUser.userId)
   if (!isMember) return NextResponse.json({ error: 'Not a member' }, { status: 403 })
 
@@ -47,80 +98,35 @@ export async function GET(req: NextRequest, { params }: Params) {
       createdAt: group.createdAt,
       updatedAt: group.updatedAt,
       members: group.members.map((m) => ({
-        id: m.id,
-        role: m.role,
-        joinedAt: m.joinedAt,
-        user: m.user,
+        id: m.id, role: m.role, joinedAt: m.joinedAt, user: m.user,
+        archived: m.archived, muted: m.muted, autoDeleteSecs: m.autoDeleteSecs, isAnonymous: m.isAnonymous,
       })),
+      slowModeSecs: group.slowModeSecs,
+      allowAnonymousAdmins: group.allowAnonymousAdmins,
+      isSupergroup: group.isSupergroup,
+      isChannel: group.isChannel,
+      pinnedMessageId: group.pinnedMessageId,
       isGroup: true,
     },
   })
 }
 
-export async function PATCH(req: NextRequest, { params }: Params) {
-  const authUser = getAuthUser(req)
-  if (!authUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
-
-  const { id } = await params
-
-  const membership = await db.groupMember.findUnique({
-    where: { groupId_userId: { groupId: id, userId: authUser.userId } },
-  })
-  if (!membership || membership.role !== 'admin') {
-    return NextResponse.json({ error: 'Admin only' }, { status: 403 })
-  }
-
-  try {
-    const body = await req.json()
-    const { name, description, avatarColor } = body as {
-      name?: string
-      description?: string
-      avatarColor?: string
-    }
-
-    const data: any = {}
-    if (typeof name === 'string' && name.trim().length >= 2) {
-      data.name = name.trim().slice(0, 50)
-    }
-    if (typeof description === 'string') {
-      data.description = description.slice(0, 200)
-    }
-    if (typeof avatarColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(avatarColor)) {
-      data.avatarColor = avatarColor
-    }
-
-    const group = await db.group.update({ where: { id }, data })
-
-    return NextResponse.json({
-      group: {
-        id: group.id,
-        name: group.name,
-        description: group.description,
-        avatarColor: group.avatarColor,
-        creatorId: group.creatorId,
-        updatedAt: group.updatedAt,
-        isGroup: true,
-      },
-    })
-  } catch (e) {
-    console.error('[update group error]', e)
-    return NextResponse.json({ error: 'Internal error' }, { status: 500 })
-  }
-}
-
+// ============================================================
+// DELETE /api/groups/[id]?action=leave  - leave group
+// DELETE /api/groups/[id]  - delete group (creator only)
+// ============================================================
 export async function DELETE(req: NextRequest, { params }: Params) {
   const authUser = getAuthUser(req)
   if (!authUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const { id } = await params
   const url = new URL(req.url)
-  const action = url.searchParams.get('action') // 'leave' or null (delete)
+  const action = url.searchParams.get('action')
 
   const group = await db.group.findUnique({ where: { id } })
   if (!group) return NextResponse.json({ error: 'Group not found' }, { status: 404 })
 
   if (action === 'leave') {
-    // Leave the group
     const membership = await db.groupMember.findUnique({
       where: { groupId_userId: { groupId: id, userId: authUser.userId } },
     })
@@ -128,46 +134,31 @@ export async function DELETE(req: NextRequest, { params }: Params) {
 
     await db.groupMember.delete({ where: { id: membership.id } })
 
-    // If creator leaves, either delete the group or transfer ownership
     if (group.creatorId === authUser.userId) {
-      // Find next admin or oldest member
       const nextAdmin = await db.groupMember.findFirst({
         where: { groupId: id, role: 'admin', userId: { not: authUser.userId } },
       })
       if (nextAdmin) {
-        await db.group.update({
-          where: { id },
-          data: { creatorId: nextAdmin.userId },
-        })
+        await db.group.update({ where: { id }, data: { creatorId: nextAdmin.userId } })
       } else {
-        // No other admin, find oldest member and make them admin
         const oldestMember = await db.groupMember.findFirst({
           where: { groupId: id },
           orderBy: { joinedAt: 'asc' },
         })
         if (oldestMember) {
           await db.$transaction([
-            db.groupMember.update({
-              where: { id: oldestMember.id },
-              data: { role: 'admin' },
-            }),
-            db.group.update({
-              where: { id },
-              data: { creatorId: oldestMember.userId },
-            }),
+            db.groupMember.update({ where: { id: oldestMember.id }, data: { role: 'admin' } }),
+            db.group.update({ where: { id }, data: { creatorId: oldestMember.userId } }),
           ])
         } else {
-          // No members left, delete the group
           await db.group.delete({ where: { id } })
         }
       }
     }
 
-    // If no members left, the group is already deleted above.
     return NextResponse.json({ success: true })
   }
 
-  // Delete group (creator only)
   if (group.creatorId !== authUser.userId) {
     return NextResponse.json({ error: 'Creator only' }, { status: 403 })
   }
