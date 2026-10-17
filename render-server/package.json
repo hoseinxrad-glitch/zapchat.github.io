@@ -1,0 +1,16 @@
+{
+  "name": "zapchat-server",
+  "version": "1.0.0",
+  "description": "ZapChat WebSocket server for real-time messaging",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

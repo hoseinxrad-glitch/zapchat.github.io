@@ -1,0 +1,69 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  username     String    @unique
+  displayName  String
+  bio          String    @default("")
+  avatarColor  String    @default("#3b82f6")
+  passwordHash String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  lastSeen     DateTime  @default(now())
+
+  // Relations
+  sentMessages     Message[]   @relation("SenderMessages")
+  receivedMessages Message[]   @relation("ReceiverMessages")
+  chatsAsUser1     Chat[]      @relation("ChatUser1")
+  chatsAsUser2     Chat[]      @relation("ChatUser2")
+
+  @@index([username])
+}
+
+model Chat {
+  id        String   @id @default(cuid())
+  user1Id   String
+  user2Id   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user1     User     @relation("ChatUser1", fields: [user1Id], references: [id])
+  user2     User     @relation("ChatUser2", fields: [user2Id], references: [id])
+  messages  Message[]
+
+  @@unique([user1Id, user2Id])
+  @@index([user1Id])
+  @@index([user2Id])
+}
+
+model Message {
+  id           String   @id @default(cuid())
+  content      String
+  type         String   @default("text") // text, image, file
+  fileUrl      String?
+  fileName     String?
+  fileSize     Int?
+  senderId     String
+  receiverId   String
+  chatId       String
+  read         Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  sender       User     @relation("SenderMessages", fields: [senderId], references: [id])
+  receiver     User     @relation("ReceiverMessages", fields: [receiverId], references: [id])
+  chat         Chat     @relation(fields: [chatId], references: [id])
+
+  @@index([chatId])
+  @@index([senderId])
+  @@index([receiverId])
+}
