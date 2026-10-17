@@ -5,7 +5,9 @@ import { AuthScreen } from '@/components/chat/AuthScreen'
 import { ChatList } from '@/components/chat/ChatList'
 import { ChatWindow } from '@/components/chat/ChatWindow'
 import { NewChatModal } from '@/components/chat/NewChatModal'
+import { CreateGroupModal } from '@/components/chat/CreateGroupModal'
 import { ProfilePanel } from '@/components/chat/ProfilePanel'
+import { GroupInfoPanel } from '@/components/chat/GroupInfoPanel'
 import { useChatSocket } from '@/components/chat/useChatSocket'
 import { useChatStore } from '@/lib/chat-store'
 import { Loader2, Zap } from 'lucide-react'
@@ -15,20 +17,33 @@ export default function Home() {
 
   const currentUser = useChatStore((s) => s.currentUser)
   const isAuthLoading = useChatStore((s) => s.isAuthLoading)
-  const activeChatId = useChatStore((s) => s.activeChatId)
+  const activeConversation = useChatStore((s) => s.activeConversation)
   const setShowNewChatModal = useChatStore((s) => s.setShowNewChatModal)
   const showNewChatModal = useChatStore((s) => s.showNewChatModal)
+  const setShowCreateGroupModal = useChatStore((s) => s.setShowCreateGroupModal)
+  const showCreateGroupModal = useChatStore((s) => s.showCreateGroupModal)
+  const setShowGroupInfoPanel = useChatStore((s) => s.setShowGroupInfoPanel)
+  const showGroupInfoPanel = useChatStore((s) => s.showGroupInfoPanel)
 
   const [showProfile, setShowProfile] = useState(false)
   const [viewProfileId, setViewProfileId] = useState<string | null>(null)
+  const [viewGroupId, setViewGroupId] = useState<string | null>(null)
 
-  // Reset view profile when closing
+  const hasActive = !!activeConversation
+
   useEffect(() => {
     if (!showProfile) {
       const t = setTimeout(() => setViewProfileId(null), 200)
       return () => clearTimeout(t)
     }
   }, [showProfile])
+
+  useEffect(() => {
+    if (!showGroupInfoPanel) {
+      const t = setTimeout(() => setViewGroupId(null), 200)
+      return () => clearTimeout(t)
+    }
+  }, [showGroupInfoPanel])
 
   if (isAuthLoading) {
     return (
@@ -52,43 +67,49 @@ export default function Home() {
     <div className="h-screen w-screen overflow-hidden flex bg-background">
       {/* Sidebar - chat list */}
       <aside
-        className={`${
-          activeChatId ? 'hidden md:flex' : 'flex'
-        } w-full md:w-80 lg:w-96 border-r border-border shrink-0 flex-col`}
+        className={`${hasActive ? 'hidden md:flex' : 'flex'} w-full md:w-80 lg:w-96 border-r border-border shrink-0 flex-col`}
       >
         <ChatList
           onOpenNewChat={() => setShowNewChatModal(true)}
+          onOpenCreateGroup={() => setShowCreateGroupModal(true)}
           onOpenProfile={() => {
             setViewProfileId(null)
             setShowProfile(true)
+          }}
+          onOpenGroupInfo={(groupId) => {
+            setViewGroupId(groupId)
+            setShowGroupInfoPanel(true)
           }}
         />
       </aside>
 
       {/* Main chat area */}
-      <main
-        className={`${
-          activeChatId ? 'flex' : 'hidden md:flex'
-        } flex-1 min-w-0`}
-      >
+      <main className={`${hasActive ? 'flex' : 'hidden md:flex'} flex-1 min-w-0`}>
         <ChatWindow
-          onBack={() => useChatStore.getState().setActiveChat(null, null)}
-          onOpenProfile={(userId) => {
+          onBack={() => useChatStore.getState().setActiveConversation(null)}
+          onOpenUserProfile={(userId) => {
             setViewProfileId(userId)
             setShowProfile(true)
+          }}
+          onOpenGroupInfo={(groupId) => {
+            setViewGroupId(groupId)
+            setShowGroupInfoPanel(true)
           }}
         />
       </main>
 
       {/* Modals */}
-      <NewChatModal
-        open={showNewChatModal}
-        onOpenChange={setShowNewChatModal}
-      />
+      <NewChatModal open={showNewChatModal} onOpenChange={setShowNewChatModal} />
+      <CreateGroupModal open={showCreateGroupModal} onOpenChange={setShowCreateGroupModal} />
       <ProfilePanel
         open={showProfile}
         onOpenChange={setShowProfile}
         viewUserId={viewProfileId}
+      />
+      <GroupInfoPanel
+        open={showGroupInfoPanel}
+        onOpenChange={setShowGroupInfoPanel}
+        groupId={viewGroupId}
       />
     </div>
   )

@@ -82,7 +82,9 @@ export function NewChatModal({ open, onOpenChange }: {
     }
   }
 
-  const existingChatUserIds = new Set(chats.map((c) => c.otherUser.id))
+  const existingChatUserIds = new Set(
+    chats.filter((c) => !c.isGroup && c.otherUser).map((c) => c.otherUser!.id)
+  )
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

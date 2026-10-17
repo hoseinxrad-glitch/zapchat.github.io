@@ -15,16 +15,36 @@ export interface ChatUser {
   lastSeen: string
 }
 
+export interface GroupMember {
+  id: string
+  role: 'admin' | 'member'
+  joinedAt: string
+  user: ChatUser
+}
+
+export interface GroupInfo {
+  id: string
+  name: string
+  description: string
+  avatarColor: string
+  creatorId: string
+  createdAt: string
+  updatedAt: string
+  members: GroupMember[]
+  isGroup: true
+}
+
 export interface ChatMessage {
   id: string
-  chatId: string
+  chatId?: string | null
+  groupId?: string | null
   content: string
   type: 'text' | 'image' | 'file'
   fileUrl?: string | null
   fileName?: string | null
   fileSize?: number | null
   senderId: string
-  receiverId: string
+  receiverId?: string | null
   read: boolean
   createdAt: string
   sender?: { id: string; username: string; displayName: string; avatarColor: string }
@@ -33,7 +53,18 @@ export interface ChatMessage {
 
 export interface ChatListItem {
   id: string
-  otherUser: ChatUser
+  isGroup?: boolean
+  // For direct chats
+  otherUser?: ChatUser
+  // For groups
+  group?: {
+    id: string
+    name: string
+    description: string
+    avatarColor: string
+    creatorId: string
+    memberCount: number
+  }
   lastMessage: ChatMessage | null
   unreadCount: number
   updatedAt: string
@@ -46,6 +77,21 @@ export interface OnlineUser {
   avatarColor: string
 }
 
+// ============================================================
+// Active conversation context - either direct or group
+// ============================================================
+export interface ActiveDirectContext {
+  type: 'direct'
+  chatId: string
+  otherUser: ChatUser
+}
+export interface ActiveGroupContext {
+  type: 'group'
+  groupId: string
+  group: GroupInfo
+}
+export type ActiveConversation = ActiveDirectContext | ActiveGroupContext | null
+
 interface ChatState {
   // Auth
   currentUser: AuthUser | null
@@ -54,28 +100,36 @@ interface ChatState {
   setAuthLoading: (v: boolean) => void
   setCurrentUser: (u: AuthUser | null) => void
 
-  // Chats
+  // Chats (direct + group combined list)
   chats: ChatListItem[]
-  activeChatId: string | null
-  activeChatOtherUser: ChatUser | null
-  messagesByChat: Record<string, ChatMessage[]>
+  groups: GroupInfo[] // separate groups list for management
+  activeConversation: ActiveConversation
+  messagesByConversation: Record<string, ChatMessage[]> // key = chatId or groupId
 
   setChats: (chats: ChatListItem[]) => void
   upsertChat: (chat: ChatListItem) => void
-  setActiveChat: (chatId: string | null, otherUser: ChatUser | null) => void
-  setMessages: (chatId: string, messages: ChatMessage[]) => void
-  addMessage: (chatId: string, message: ChatMessage) => void
-  updateMessage: (chatId: string, tempId: string, realMessage: ChatMessage) => void
-  markChatRead: (chatId: string) => void
+  setGroups: (groups: GroupInfo[]) => void
+  upsertGroup: (group: GroupInfo) => void
+  removeGroup: (groupId: string) => void
+  setActiveDirect: (chatId: string, otherUser: ChatUser) => void
+  setActiveGroup: (group: GroupInfo) => void
+  setActiveConversation: (conv: ActiveConversation) => void
+  setMessages: (convId: string, messages: ChatMessage[]) => void
+  addMessage: (convId: string, message: ChatMessage) => void
+  updateMessage: (convId: string, tempId: string, realMessage: ChatMessage) => void
+  removeMessage: (convId: string, messageId: string) => void
+  markChatRead: (convId: string) => void
 
   // Online users & typing
   onlineUsers: OnlineUser[]
   typingByUserId: Record<string, boolean>
+  typingByGroup: Record<string, { userId: string; username: string } | null>
 
   setOnlineUsers: (users: OnlineUser[]) => void
   setUserOnline: (user: OnlineUser) => void
   setUserOffline: (userId: string) => void
   setTyping: (userId: string, isTyping: boolean) => void
+  setGroupTyping: (groupId: string, typing: { userId: string; username: string } | null) => void
 
   // Connection
   isSocketConnected: boolean
@@ -84,94 +138,129 @@ interface ChatState {
   // UI state
   showProfilePanel: boolean
   showNewChatModal: boolean
+  showCreateGroupModal: boolean
+  showGroupInfoPanel: boolean
+  viewProfileUserId: string | null
   toggleProfilePanel: () => void
   setShowNewChatModal: (v: boolean) => void
+  setShowCreateGroupModal: (v: boolean) => void
+  setShowGroupInfoPanel: (v: boolean) => void
+  setViewProfileUserId: (id: string | null) => void
 }
 
-export const useChatStore = create<ChatState>((set, get) => ({
+export const useChatStore = create<ChatState>((set) => ({
   currentUser: null,
   isAuthLoading: true,
   setAuthLoading: (v) => set({ isAuthLoading: v }),
   setCurrentUser: (u) => set({ currentUser: u }),
 
   chats: [],
-  activeChatId: null,
-  activeChatOtherUser: null,
-  messagesByChat: {},
+  groups: [],
+  activeConversation: null,
+  messagesByConversation: {},
 
   setChats: (chats) => set({ chats }),
 
   upsertChat: (chat) =>
     set((state) => {
-      const existing = state.chats.findIndex((c) => c.id === chat.id)
-      if (existing === -1) {
-        return { chats: [chat, ...state.chats] }
-      }
+      const idx = state.chats.findIndex((c) => c.id === chat.id)
+      if (idx === -1) return { chats: [chat, ...state.chats] }
       const next = [...state.chats]
-      next[existing] = chat
+      next[idx] = { ...next[idx], ...chat }
       // Move to top
-      const [item] = next.splice(existing, 1)
+      const [item] = next.splice(idx, 1)
       next.unshift(item)
       return { chats: next }
     }),
 
-  setActiveChat: (chatId, otherUser) => {
-    set({ activeChatId: chatId, activeChatOtherUser: otherUser })
-    if (chatId) {
-      // Clear unread count for the active chat
-      set((state) => ({
-        chats: state.chats.map((c) =>
-          c.id === chatId ? { ...c, unreadCount: 0 } : c
-        ),
-      }))
-    }
-  },
+  setGroups: (groups) => set({ groups }),
 
-  setMessages: (chatId, messages) =>
+  upsertGroup: (group) =>
+    set((state) => {
+      const idx = state.groups.findIndex((g) => g.id === group.id)
+      if (idx === -1) return { groups: [group, ...state.groups] }
+      const next = [...state.groups]
+      next[idx] = group
+      return { groups: next }
+    }),
+
+  removeGroup: (groupId) =>
     set((state) => ({
-      messagesByChat: { ...state.messagesByChat, [chatId]: messages },
+      groups: state.groups.filter((g) => g.id !== groupId),
+      chats: state.chats.filter((c) => c.id !== groupId),
     })),
 
-  addMessage: (chatId, message) =>
+  setActiveDirect: (chatId, otherUser) =>
+    set((state) => ({
+      activeConversation: { type: 'direct', chatId, otherUser },
+      chats: state.chats.map((c) => (c.id === chatId ? { ...c, unreadCount: 0 } : c)),
+    })),
+
+  setActiveGroup: (group) =>
+    set((state) => ({
+      activeConversation: { type: 'group', groupId: group.id, group },
+      chats: state.chats.map((c) => (c.id === group.id ? { ...c, unreadCount: 0 } : c)),
+    })),
+
+  setActiveConversation: (conv) => set({ activeConversation: conv }),
+
+  setMessages: (convId, messages) =>
+    set((state) => ({
+      messagesByConversation: { ...state.messagesByConversation, [convId]: messages },
+    })),
+
+  addMessage: (convId, message) =>
     set((state) => {
-      const existing = state.messagesByChat[chatId] || []
-      // Avoid duplicate by id
+      const existing = state.messagesByConversation[convId] || []
       if (existing.find((m) => m.id === message.id)) return state
       return {
-        messagesByChat: {
-          ...state.messagesByChat,
-          [chatId]: [...existing, message],
+        messagesByConversation: {
+          ...state.messagesByConversation,
+          [convId]: [...existing, message],
         },
       }
     }),
 
-  updateMessage: (chatId, tempId, realMessage) =>
+  updateMessage: (convId, tempId, realMessage) =>
     set((state) => {
-      const existing = state.messagesByChat[chatId] || []
+      const existing = state.messagesByConversation[convId] || []
       const next = existing.map((m) =>
         m.id === tempId ? { ...realMessage, pending: false } : m
       )
       return {
-        messagesByChat: { ...state.messagesByChat, [chatId]: next },
+        messagesByConversation: { ...state.messagesByConversation, [convId]: next },
       }
     }),
 
-  markChatRead: (chatId) =>
+  removeMessage: (convId, messageId) =>
     set((state) => {
-      const messages = state.messagesByChat[chatId] || []
+      const existing = state.messagesByConversation[convId] || []
       return {
-        messagesByChat: {
-          ...state.messagesByChat,
-          [chatId]: messages.map((m) => ({ ...m, read: m.receiverId === state.currentUser?.id ? true : m.read })),
+        messagesByConversation: {
+          ...state.messagesByConversation,
+          [convId]: existing.filter((m) => m.id !== messageId),
         },
-        chats: state.chats.map((c) =>
-          c.id === chatId ? { ...c, unreadCount: 0 } : c
-        ),
+      }
+    }),
+
+  markChatRead: (convId) =>
+    set((state) => {
+      const messages = state.messagesByConversation[convId] || []
+      return {
+        messagesByConversation: {
+          ...state.messagesByConversation,
+          [convId]: messages.map((m) => ({
+            ...m,
+            read: m.receiverId === state.currentUser?.id ? true : m.read,
+          })),
+        },
+        chats: state.chats.map((c) => (c.id === convId ? { ...c, unreadCount: 0 } : c)),
       }
     }),
 
   onlineUsers: [],
   typingByUserId: {},
+  typingByGroup: {},
 
   setOnlineUsers: (users) => set({ onlineUsers: users }),
   setUserOnline: (user) =>
@@ -188,12 +277,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set((state) => ({
       typingByUserId: { ...state.typingByUserId, [userId]: isTyping },
     })),
+  setGroupTyping: (groupId, typing) =>
+    set((state) => ({
+      typingByGroup: { ...state.typingByGroup, [groupId]: typing },
+    })),
 
   isSocketConnected: false,
   setSocketConnected: (v) => set({ isSocketConnected: v }),
 
   showProfilePanel: false,
   showNewChatModal: false,
+  showCreateGroupModal: false,
+  showGroupInfoPanel: false,
+  viewProfileUserId: null,
   toggleProfilePanel: () => set((s) => ({ showProfilePanel: !s.showProfilePanel })),
   setShowNewChatModal: (v) => set({ showNewChatModal: v }),
+  setShowCreateGroupModal: (v) => set({ showCreateGroupModal: v }),
+  setShowGroupInfoPanel: (v) => set({ showGroupInfoPanel: v }),
+  setViewProfileUserId: (id) => set({ viewProfileUserId: id }),
 }))

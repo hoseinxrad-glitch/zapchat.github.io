@@ -1,20 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getAuthUser } from '@/lib/auth'
-import crypto from 'crypto'
 
 // ============================================================
-// POST /api/messages  - persist a message sent via WebSocket
-//   body: {
-//     chatId: string,
-//     receiverId: string,
-//     content: string,
-//     type?: 'text' | 'image' | 'file',
-//     fileUrl?: string,
-//     fileName?: string,
-//     fileSize?: number,
-//     tempId?: string  // client-generated temp id for matching
-//   }
+// POST /api/messages  - persist a message
+//   body for direct:  { chatId, receiverId, content, type?, ... }
+//   body for group:   { groupId, content, type?, ... }
+// ============================================================
 // GET /api/messages?action=unread-count  - total unread messages
 // DELETE /api/messages?id=xxx  - delete a message (own only)
 // ============================================================
@@ -27,6 +19,7 @@ export async function POST(req: NextRequest) {
     const body = await req.json()
     const {
       chatId,
+      groupId,
       receiverId,
       content,
       type,
@@ -35,8 +28,9 @@ export async function POST(req: NextRequest) {
       fileSize,
       tempId,
     } = body as {
-      chatId: string
-      receiverId: string
+      chatId?: string
+      groupId?: string
+      receiverId?: string
       content: string
       type?: string
       fileUrl?: string | null
@@ -45,9 +39,73 @@ export async function POST(req: NextRequest) {
       tempId?: string
     }
 
-    if (!chatId || !receiverId || content === undefined) {
+    if (content === undefined) {
+      return NextResponse.json({ error: 'content is required' }, { status: 400 })
+    }
+
+    // -------- Group message --------
+    if (groupId) {
+      // Verify membership
+      const membership = await db.groupMember.findUnique({
+        where: { groupId_userId: { groupId, userId: authUser.userId } },
+      })
+      if (!membership) {
+        return NextResponse.json({ error: 'Not a member of this group' }, { status: 403 })
+      }
+
+      const message = await db.message.create({
+        data: {
+          groupId,
+          senderId: authUser.userId,
+          content: content || '',
+          type: type || 'text',
+          fileUrl: fileUrl || null,
+          fileName: fileName || null,
+          fileSize: fileSize || null,
+          // receiverId and chatId are null for group messages
+        },
+        include: {
+          sender: { select: { id: true, username: true, displayName: true, avatarColor: true } },
+        },
+      })
+
+      // Update group updatedAt for sorting
+      await db.group.update({
+        where: { id: groupId },
+        data: { updatedAt: new Date() },
+      })
+
+      // Fetch all member user IDs to send to via WebSocket (returned to client)
+      const members = await db.groupMember.findMany({
+        where: { groupId, userId: { not: authUser.userId } },
+        select: { userId: true },
+      })
+
+      return NextResponse.json({
+        message: {
+          id: message.id,
+          chatId: message.chatId,
+          groupId: message.groupId,
+          content: message.content,
+          type: message.type,
+          fileUrl: message.fileUrl,
+          fileName: message.fileName,
+          fileSize: message.fileSize,
+          senderId: message.senderId,
+          receiverId: message.receiverId,
+          read: message.read,
+          createdAt: message.createdAt,
+          sender: message.sender,
+        },
+        memberIds: members.map((m) => m.userId),
+        tempId,
+      })
+    }
+
+    // -------- Direct message --------
+    if (!chatId || !receiverId) {
       return NextResponse.json(
-        { error: 'chatId, receiverId, content are required' },
+        { error: 'Either (chatId + receiverId) or groupId is required' },
         { status: 400 }
       )
     }
@@ -88,6 +146,7 @@ export async function POST(req: NextRequest) {
       message: {
         id: message.id,
         chatId: message.chatId,
+        groupId: message.groupId,
         content: message.content,
         type: message.type,
         fileUrl: message.fileUrl,
@@ -108,7 +167,7 @@ export async function POST(req: NextRequest) {
 }
 
 // ------------------------------------------------------------
-// GET unread count
+// GET unread count (direct messages only — group unread uses different model)
 // ------------------------------------------------------------
 export async function GET(req: NextRequest) {
   const authUser = getAuthUser(req)
@@ -137,9 +196,6 @@ export async function DELETE(req: NextRequest) {
   const url = new URL(req.url)
   const id = url.searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'id is required' }, { status: 400 })
-
-  // Use randomBytes to silence unused var
-  void crypto
 
   try {
     const message = await db.message.findUnique({ where: { id } })

@@ -8,8 +8,7 @@ import type { ChatMessage } from '@/lib/chat-store'
 
 /**
  * useChatSocket - sets up the Socket.io connection, handles auth bootstrap,
- * listens for incoming messages, typing, presence, and routes them to the
- * Zustand store.
+ * listens for incoming direct + group messages, typing, presence, and group events.
  */
 export function useChatSocket() {
   const socketRef = useRef<Socket | null>(null)
@@ -19,30 +18,74 @@ export function useChatSocket() {
   const isAuthLoading = useChatStore((s) => s.isAuthLoading)
 
   const setChats = useChatStore((s) => s.setChats)
+  const setGroups = useChatStore((s) => s.setGroups)
   const upsertChat = useChatStore((s) => s.upsertChat)
+  const upsertGroup = useChatStore((s) => s.upsertGroup)
+  const removeGroup = useChatStore((s) => s.removeGroup)
   const setMessages = useChatStore((s) => s.setMessages)
   const addMessage = useChatStore((s) => s.addMessage)
-  const setActiveChat = useChatStore((s) => s.setActiveChat)
   const markChatRead = useChatStore((s) => s.markChatRead)
 
   const setOnlineUsers = useChatStore((s) => s.setOnlineUsers)
   const setUserOnline = useChatStore((s) => s.setUserOnline)
   const setUserOffline = useChatStore((s) => s.setUserOffline)
   const setTyping = useChatStore((s) => s.setTyping)
+  const setGroupTyping = useChatStore((s) => s.setGroupTyping)
   const setSocketConnected = useChatStore((s) => s.setSocketConnected)
-  const chats = useChatStore((s) => s.chats)
 
-  // Track previous chats to know which were newly added
-  const chatsRef = useRef(chats)
-  useEffect(() => { chatsRef.current = chats }, [chats])
+  // Track chats and groups to update last message
+  const chatsRef = useRef(useChatStore.getState().chats)
+  const groupsRef = useRef(useChatStore.getState().groups)
+  useEffect(() => {
+    const unsub = useChatStore.subscribe((s) => {
+      chatsRef.current = s.chats
+      groupsRef.current = s.groups
+    })
+    return unsub
+  }, [])
 
-  // 1) Bootstrap: load chats from API on mount if authenticated
+  // 1) Bootstrap: load direct chats + groups from API on mount if authenticated
   useEffect(() => {
     if (!currentUser) return
+
+    // Load direct chats
     apiFetch<{ chats: any[] }>('/api/chats?action=list')
-      .then((data) => setChats(data.chats))
+      .then((data) => {
+        const directChats = data.chats.map((c) => ({
+          id: c.id,
+          isGroup: false,
+          otherUser: c.otherUser,
+          lastMessage: c.lastMessage,
+          unreadCount: c.unreadCount,
+          updatedAt: c.updatedAt,
+        }))
+        // Load groups
+        return apiFetch<{ groups: any[] }>('/api/groups?action=list').then((groupData) => {
+          const groupChats = groupData.groups.map((g) => ({
+            id: g.id,
+            isGroup: true,
+            group: {
+              id: g.id,
+              name: g.name,
+              description: g.description,
+              avatarColor: g.avatarColor,
+              creatorId: g.creatorId,
+              memberCount: g.members?.length || 0,
+            },
+            lastMessage: g.lastMessage,
+            unreadCount: g.unreadCount,
+            updatedAt: g.updatedAt,
+          }))
+          // Merge and sort by updatedAt
+          const all = [...directChats, ...groupChats].sort(
+            (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+          )
+          setChats(all)
+          setGroups(groupData.groups)
+        })
+      })
       .catch((e) => console.error('[load chats]', e))
-  }, [currentUser?.id, setChats])
+  }, [currentUser?.id, setChats, setGroups])
 
   // 2) Set up the WebSocket connection once we know who we are
   useEffect(() => {
@@ -59,12 +102,10 @@ export function useChatSocket() {
       timeout: 10000,
     })
     socketRef.current = socket
-    // Expose socket globally so other components (ChatWindow typing indicator) can emit
     ;(window as any).__zapchat_socket = socket
 
     socket.on('connect', () => {
       setSocketConnected(true)
-      // Tell the server we are online
       socket.emit('user:online', {
         userId: currentUser.id,
         username: currentUser.username,
@@ -76,66 +117,66 @@ export function useChatSocket() {
     socket.on('disconnect', () => setSocketConnected(false))
     socket.on('reconnect', () => setSocketConnected(true))
 
-    // Incoming message
-    socket.on('message:receive', async (data: any) => {
-      // data: full message object { id, chatId, senderId, receiverId, content, ... }
+    // -------- Direct message received --------
+    socket.on('message:receive', (data: any) => {
       const incoming: ChatMessage = data
-      // Fetch full chat list to update sidebar preview
-      try {
-        // Load this chat's messages from server if we haven't yet
-        const existing = chatsRef.current.find((c) => c.id === incoming.chatId)
-        if (!existing) {
-          // New chat - refetch the chat list
-          apiFetch<{ chats: any[] }>('/api/chats?action=list')
-            .then((data) => setChats(data.chats))
-            .catch(() => {})
-        } else {
-          // Update chat list with new last message + unread count
-          upsertChat({
-            id: incoming.chatId,
-            otherUser: existing.otherUser,
-            lastMessage: incoming,
-            unreadCount: incoming.receiverId === currentUser.id
-              ? existing.unreadCount + (useChatStore.getState().activeChatId === incoming.chatId ? 0 : 1)
-              : existing.unreadCount,
-            updatedAt: new Date().toISOString(),
+      const existing = chatsRef.current.find((c) => c.id === incoming.chatId)
+      if (!existing) {
+        apiFetch<{ chats: any[] }>('/api/chats?action=list')
+          .then((d) => {
+            const directChats = d.chats.map((c) => ({
+              id: c.id, isGroup: false, otherUser: c.otherUser,
+              lastMessage: c.lastMessage, unreadCount: c.unreadCount, updatedAt: c.updatedAt,
+            }))
+            // Merge with existing groups in chatsRef
+            const groupChats = chatsRef.current.filter((c) => c.isGroup)
+            const all = [...directChats, ...groupChats].sort(
+              (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+            )
+            setChats(all)
           })
-        }
-        // Add the message to the chat
-        addMessage(incoming.chatId, incoming)
+          .catch(() => {})
+      } else {
+        upsertChat({
+          id: incoming.chatId!,
+          isGroup: false,
+          otherUser: existing.otherUser,
+          lastMessage: incoming,
+          unreadCount:
+            incoming.receiverId === currentUser.id
+              ? useChatStore.getState().activeConversation?.type === 'direct' &&
+                useChatStore.getState().activeConversation.chatId === incoming.chatId
+                ? 0
+                : existing.unreadCount + 1
+              : existing.unreadCount,
+          updatedAt: new Date().toISOString(),
+        })
+      }
+      addMessage(incoming.chatId!, incoming)
 
-        // If this is the active chat, mark as read immediately
-        if (useChatStore.getState().activeChatId === incoming.chatId) {
-          markChatRead(incoming.chatId)
-          apiFetch('/api/chats?action=read', {
-            method: 'PATCH',
-            body: JSON.stringify({ chatId: incoming.chatId, messageIds: [incoming.id] }),
-          }).catch(() => {})
-        }
-      } catch (e) {
-        console.error('[receive]', e)
+      const active = useChatStore.getState().activeConversation
+      if (active?.type === 'direct' && active.chatId === incoming.chatId) {
+        markChatRead(incoming.chatId!)
+        apiFetch('/api/chats?action=read', {
+          method: 'PATCH',
+          body: JSON.stringify({ chatId: incoming.chatId, messageIds: [incoming.id] }),
+        }).catch(() => {})
       }
     })
 
-    // Message delivered to server (ack)
-    socket.on('message:delivered', (data: { messageId: string; chatId: string }) => {
-      // No-op for now; we wait for the /api/messages POST response
-    })
-
     // Read receipt
-    socket.on('message:read-receipt', (data: { chatId: string; messageIds: string[]; readerId: string }) => {
-      const messages = useChatStore.getState().messagesByChat[data.chatId] || []
+    socket.on('message:read-receipt', (data: { chatId: string; messageIds: string[] }) => {
+      const messages = useChatStore.getState().messagesByConversation[data.chatId] || []
       const updated = messages.map((m) =>
         data.messageIds.includes(m.id) ? { ...m, read: true } : m
       )
       setMessages(data.chatId, updated)
     })
 
-    // Typing indicator
-    socket.on('typing', (data: { fromUserId: string; fromUsername: string; isTyping: boolean }) => {
+    // -------- Direct typing --------
+    socket.on('typing', (data: { fromUserId: string; isTyping: boolean }) => {
       setTyping(data.fromUserId, data.isTyping)
       if (data.isTyping) {
-        // Auto-clear after 4s as a safety net
         setTimeout(() => {
           const current = useChatStore.getState().typingByUserId[data.fromUserId]
           if (current) setTyping(data.fromUserId, false)
@@ -143,7 +184,107 @@ export function useChatSocket() {
       }
     })
 
-    // Presence
+    // -------- Group message received --------
+    socket.on('group:message:receive', (data: { groupId: string; message: ChatMessage }) => {
+      const { groupId, message } = data
+      const existing = chatsRef.current.find((c) => c.id === groupId)
+      if (existing) {
+        upsertChat({
+          id: groupId,
+          isGroup: true,
+          group: existing.group,
+          lastMessage: message,
+          unreadCount:
+            useChatStore.getState().activeConversation?.type === 'group' &&
+            useChatStore.getState().activeConversation.groupId === groupId
+              ? 0
+              : existing.unreadCount + 1,
+          updatedAt: new Date().toISOString(),
+        })
+      }
+      addMessage(groupId, message)
+
+      const active = useChatStore.getState().activeConversation
+      if (active?.type === 'group' && active.groupId === groupId) {
+        markChatRead(groupId)
+      }
+    })
+
+    // -------- Group typing --------
+    socket.on('group:typing', (data: {
+      groupId: string
+      fromUserId: string
+      fromUsername: string
+      isTyping: boolean
+    }) => {
+      setGroupTyping(
+        data.groupId,
+        data.isTyping ? { userId: data.fromUserId, username: data.fromUsername } : null
+      )
+      if (data.isTyping) {
+        setTimeout(() => {
+          const current = useChatStore.getState().typingByGroup[data.groupId]
+          if (current?.userId === data.fromUserId) {
+            setGroupTyping(data.groupId, null)
+          }
+        }, 4000)
+      }
+    })
+
+    // -------- New group received (someone added me) --------
+    socket.on('group:new-received', (data: { group: any }) => {
+      upsertGroup(data.group)
+      upsertChat({
+        id: data.group.id,
+        isGroup: true,
+        group: {
+          id: data.group.id,
+          name: data.group.name,
+          description: data.group.description,
+          avatarColor: data.group.avatarColor,
+          creatorId: data.group.creatorId,
+          memberCount: data.group.members?.length || 0,
+        },
+        lastMessage: null,
+        unreadCount: 0,
+        updatedAt: new Date().toISOString(),
+      })
+    })
+
+    // -------- Group events --------
+    socket.on('group:event', (data: {
+      type: 'member-added' | 'member-removed' | 'group-updated' | 'group-deleted'
+      groupId: string
+      payload?: any
+    }) => {
+      if (data.type === 'group-deleted') {
+        removeGroup(data.groupId)
+        return
+      }
+      // For member-added / member-removed / group-updated, refresh the group info
+      apiFetch<{ group: any }>(`/api/groups/${data.groupId}`)
+        .then((res) => {
+          upsertGroup(res.group)
+          // Update the chat row in sidebar
+          const existing = chatsRef.current.find((c) => c.id === data.groupId)
+          if (existing) {
+            upsertChat({
+              ...existing,
+              group: {
+                id: res.group.id,
+                name: res.group.name,
+                description: res.group.description,
+                avatarColor: res.group.avatarColor,
+                creatorId: res.group.creatorId,
+                memberCount: res.group.members.length,
+              },
+            })
+          }
+        })
+        .catch(() => {})
+    })
+
+    // -------- Presence --------
     socket.on('user:presence', (data: any) => {
       if (data.status === 'online') {
         setUserOnline({
@@ -161,11 +302,20 @@ export function useChatSocket() {
       setOnlineUsers(data.users)
     })
 
-    // New chat received from another user
-    socket.on('chat:new-received', (data: any) => {
-      // Refetch chats
+    // -------- New chat (direct) received --------
+    socket.on('chat:new-received', () => {
       apiFetch<{ chats: any[] }>('/api/chats?action=list')
-        .then((d) => setChats(d.chats))
+        .then((d) => {
+          const directChats = d.chats.map((c) => ({
+            id: c.id, isGroup: false, otherUser: c.otherUser,
+            lastMessage: c.lastMessage, unreadCount: c.unreadCount, updatedAt: c.updatedAt,
+          }))
+          const groupChats = chatsRef.current.filter((c) => c.isGroup)
+          const all = [...directChats, ...groupChats].sort(
+            (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
+          )
+          setChats(all)
+        })
         .catch(() => {})
     })
 
@@ -178,7 +328,7 @@ export function useChatSocket() {
 
   // 3) Bootstrap auth on first mount
   useEffect(() => {
-    if (!isAuthLoading) return // already resolved
+    if (!isAuthLoading) return
     const token = typeof window !== 'undefined' ? localStorage.getItem('zapchat_token') : null
     if (!token) {
       setAuthLoading(false)
@@ -187,7 +337,6 @@ export function useChatSocket() {
     apiFetch<{ user: AuthUser }>('/api/auth?action=me')
       .then((data) => setCurrentUser(data.user))
       .catch(() => {
-        // Token invalid, clear it
         localStorage.removeItem('zapchat_token')
         localStorage.removeItem('zapchat_user')
         setAuthLoading(false)

@@ -26,6 +26,8 @@ model User {
   receivedMessages Message[]   @relation("ReceiverMessages")
   chatsAsUser1     Chat[]      @relation("ChatUser1")
   chatsAsUser2     Chat[]      @relation("ChatUser2")
+  groupMemberships GroupMember[]
+  createdGroups   Group[]     @relation("GroupCreator")
 
   @@index([username])
 }
@@ -46,6 +48,37 @@ model Chat {
   @@index([user2Id])
 }
 
+model Group {
+  id           String   @id @default(cuid())
+  name         String
+  description  String   @default("")
+  avatarColor  String   @default("#8b5cf6")
+  creatorId    String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  creator      User     @relation("GroupCreator", fields: [creatorId], references: [id])
+  members      GroupMember[]
+  messages     Message[]
+
+  @@index([creatorId])
+}
+
+model GroupMember {
+  id        String   @id @default(cuid())
+  groupId   String
+  userId    String
+  role      String   @default("member") // admin, member
+  joinedAt  DateTime @default(now())
+
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([groupId])
+  @@index([userId])
+}
+
 model Message {
   id           String   @id @default(cuid())
   content      String
@@ -54,16 +87,19 @@ model Message {
   fileName     String?
   fileSize     Int?
   senderId     String
-  receiverId   String
-  chatId       String
+  receiverId   String?  // null for group messages
+  chatId       String?  // null for group messages
+  groupId      String?  // null for direct messages
   read         Boolean  @default(false)
   createdAt    DateTime @default(now())
 
   sender       User     @relation("SenderMessages", fields: [senderId], references: [id])
-  receiver     User     @relation("ReceiverMessages", fields: [receiverId], references: [id])
-  chat         Chat     @relation(fields: [chatId], references: [id])
+  receiver     User?    @relation("ReceiverMessages", fields: [receiverId], references: [id])
+  chat         Chat?    @relation(fields: [chatId], references: [id])
+  group        Group?   @relation(fields: [groupId], references: [id])
 
   @@index([chatId])
+  @@index([groupId])
   @@index([senderId])
   @@index([receiverId])
 }

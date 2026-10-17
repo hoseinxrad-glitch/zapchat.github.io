@@ -26,28 +26,14 @@ interface OnlineUser {
   lastSeen: number
 }
 
-interface TypingState {
-  fromUserId: string
-  fromUsername: string
-  toUserId: string
-  isTyping: boolean
-}
-
 // ============================================================
-// In-memory state (online users only - real data is in DB)
+// In-memory state (online users only)
 // ============================================================
-const onlineUsers = new Map<string, OnlineUser>() // userId -> OnlineUser
-const socketToUser = new Map<string, string>() // socketId -> userId
-
-// ============================================================
-// Helpers
-// ============================================================
-function getOnlineUsersList(): OnlineUser[] {
-  return Array.from(onlineUsers.values())
-}
+const onlineUsers = new Map<string, OnlineUser>()
+const socketToUser = new Map<string, string>()
 
 function emitOnlineUsersList() {
-  const list = getOnlineUsersList().map((u) => ({
+  const list = Array.from(onlineUsers.values()).map((u) => ({
     userId: u.userId,
     username: u.username,
     displayName: u.displayName,
@@ -56,14 +42,26 @@ function emitOnlineUsersList() {
   io.emit('users-list', { users: list })
 }
 
-// ============================================================
-// Socket event handlers
-// ============================================================
+// Deliver to a specific user (all their active sockets)
+function sendToUser(userId: string, event: string, payload: any) {
+  const user = onlineUsers.get(userId)
+  if (user) {
+    io.to(user.socketId).emit(event, payload)
+  }
+}
+
+// Deliver to multiple users (used for group messages)
+function sendToUsers(userIds: string[], event: string, payload: any) {
+  for (const uid of userIds) {
+    sendToUser(uid, event, payload)
+  }
+}
+
 io.on('connection', (socket) => {
   console.log(`[connection] socket=${socket.id}`)
 
   // ----------------------------------------------------------
-  // User comes online
+  // Direct: user comes online
   // ----------------------------------------------------------
   socket.on('user:online', (data: {
     userId: string
@@ -71,106 +69,115 @@ io.on('connection', (socket) => {
     displayName: string
     avatarColor: string
   }) => {
-    const { userId, username, displayName, avatarColor } = data
     const online: OnlineUser = {
-      userId,
-      username,
-      displayName,
-      avatarColor,
+      ...data,
       socketId: socket.id,
       lastSeen: Date.now(),
     }
-    onlineUsers.set(userId, online)
-    socketToUser.set(socket.id, userId)
+    onlineUsers.set(data.userId, online)
+    socketToUser.set(socket.id, data.userId)
 
-    // Notify everyone that this user is online
-    io.emit('user:presence', {
-      userId,
-      username,
-      displayName,
-      avatarColor,
-      status: 'online',
-    })
-
-    // Send the full online list back to the new connection
+    io.emit('user:presence', { ...data, status: 'online' })
     emitOnlineUsersList()
-
-    console.log(`[user:online] ${username} (${userId})`)
+    console.log(`[user:online] ${data.username}`)
   })
 
   // ----------------------------------------------------------
-  // Direct message
+  // Direct message (1-on-1)
   // ----------------------------------------------------------
-  socket.on('message:send', (data: {
-    messageId: string
-    chatId: string
-    senderId: string
-    receiverId: string
-    content: string
-    type?: string
-    fileUrl?: string | null
-    fileName?: string | null
-    fileSize?: number | null
-    createdAt: string
-  }) => {
+  socket.on('message:send', (data: any) => {
     // Forward to receiver if they are online
-    const receiver = onlineUsers.get(data.receiverId)
-    if (receiver) {
-      io.to(receiver.socketId).emit('message:receive', data)
-    }
+    sendToUser(data.receiverId, 'message:receive', data)
     // Echo back to sender for confirmation
     socket.emit('message:delivered', {
       messageId: data.messageId,
       chatId: data.chatId,
     })
-    console.log(`[message:send] ${data.senderId} -> ${data.receiverId}: ${data.content?.slice(0, 50)}`)
   })
 
   // ----------------------------------------------------------
-  // Message read receipt
+  // Group message (broadcast to all listed memberIds)
+  // The client sends the list of recipient userIds (excluding sender).
   // ----------------------------------------------------------
-  socket.on('message:read', (data: {
-    chatId: string
-    messageIds: string[]
-    readerId: string
+  socket.on('group:message:send', (data: {
+    messageId: string
+    groupId: string
     senderId: string
+    memberIds: string[]
+    payload: any // full message object
   }) => {
+    sendToUsers(data.memberIds, 'group:message:receive', {
+      groupId: data.groupId,
+      message: data.payload,
+    })
+    // Echo back to sender for confirmation
+    socket.emit('group:message:delivered', {
+      messageId: data.messageId,
+      groupId: data.groupId,
+    })
+  })
+
+  // ----------------------------------------------------------
+  // Group typing indicator
+  // ----------------------------------------------------------
+  socket.on('group:typing', (data: {
+    groupId: string
+    fromUserId: string
+    fromUsername: string
+    fromDisplayName: string
+    memberIds: string[]
+    isTyping: boolean
+  }) => {
+    sendToUsers(data.memberIds, 'group:typing', {
+      groupId: data.groupId,
+      fromUserId: data.fromUserId,
+      fromUsername: data.fromUsername,
+      fromDisplayName: data.fromDisplayName,
+      isTyping: data.isTyping,
+    })
+  })
+
+  // ----------------------------------------------------------
+  // Group event: a member was added/removed/updated
+  // ----------------------------------------------------------
+  socket.on('group:event', (data: {
+    type: 'member-added' | 'member-removed' | 'group-updated' | 'group-deleted'
+    groupId: string
+    memberIds: string[]
+    payload?: any
+  }) => {
+    sendToUsers(data.memberIds, 'group:event', data)
+  })
+
+  // ----------------------------------------------------------
+  // Read receipt (direct messages)
+  // ----------------------------------------------------------
+  socket.on('message:read', (data: any) => {
     const sender = onlineUsers.get(data.senderId)
     if (sender) {
-      io.to(sender.socketId).emit('message:read-receipt', {
-        chatId: data.chatId,
-        messageIds: data.messageIds,
-        readerId: data.readerId,
-      })
+      io.to(sender.socketId).emit('message:read-receipt', data)
     }
   })
 
   // ----------------------------------------------------------
-  // Typing indicator
+  // Typing indicator (direct)
   // ----------------------------------------------------------
-  socket.on('typing', (data: TypingState) => {
-    const receiver = onlineUsers.get(data.toUserId)
-    if (receiver) {
-      io.to(receiver.socketId).emit('typing', {
-        fromUserId: data.fromUserId,
-        fromUsername: data.fromUsername,
-        isTyping: data.isTyping,
-      })
-    }
+  socket.on('typing', (data: any) => {
+    sendToUser(data.toUserId, 'typing', data)
   })
 
   // ----------------------------------------------------------
-  // New chat created - notify the other user
+  // New chat created (direct) - notify the other user
   // ----------------------------------------------------------
-  socket.on('chat:new', (data: {
-    chatId: string
-    toUserId: string
-    fromUser: { userId: string; username: string; displayName: string; avatarColor: string }
-  }) => {
-    const receiver = onlineUsers.get(data.toUserId)
-    if (receiver) {
-      io.to(receiver.socketId).emit('chat:new-received', data)
-    }
+  socket.on('chat:new', (data: any) => {
+    sendToUser(data.toUserId, 'chat:new-received', data)
+  })
+
+  // ----------------------------------------------------------
+  // New group created - notify all members so they refresh their group list
+  // ----------------------------------------------------------
+  socket.on('group:new', (data: { memberIds: string[]; group: any }) => {
+    sendToUsers(data.memberIds, 'group:new-received', { group: data.group })
   })
 
   // ----------------------------------------------------------
@@ -184,7 +191,6 @@ io.on('connection', (socket) => {
       socketToUser.delete(socket.id)
 
       if (user) {
-        // Notify everyone this user is now offline
         io.emit('user:presence', {
           userId,
           username: user.username,
@@ -193,7 +199,7 @@ io.on('connection', (socket) => {
           status: 'offline',
           lastSeen: Date.now(),
         })
-        console.log(`[user:offline] ${user.username} (${userId})`)
+        console.log(`[user:offline] ${user.username}`)
       }
     }
     emitOnlineUsersList()
@@ -205,10 +211,9 @@ io.on('connection', (socket) => {
 })
 
 httpServer.listen(PORT, () => {
-  console.log(`🚀 Chat WebSocket service running on port ${PORT}`)
+  console.log(`Chat WebSocket service running on port ${PORT}`)
 })
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
   console.log('Received SIGTERM, shutting down...')
   httpServer.close(() => process.exit(0))

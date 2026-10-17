@@ -1,10 +1,10 @@
 'use client'
 
-import { useRef, useEffect, useState, useMemo } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Send, Paperclip, Smile, ArrowLeft, Phone, Video, MoreVertical,
-  Check, CheckCheck, Image as ImageIcon, File as FileIcon, X, Loader2
+  Check, CheckCheck, File as FileIcon, X, Loader2, Users, Settings
 } from 'lucide-react'
 import { Avatar } from './Avatar'
 import { Button } from '@/components/ui/button'
@@ -19,20 +19,22 @@ import { apiFetch, formatTimeFull, formatBytes } from '@/lib/chat-utils'
 import { cn } from '@/lib/utils'
 import { toast } from 'sonner'
 
-interface ChatWindowProps {
-  onBack: () => void
-  onOpenProfile: (userId: string) => void
-}
-
 const EMOJIS = ['😀', '😂', '❤️', '👍', '👎', '🔥', '🎉', '🙏', '😍', '😮', '😢', '🤔', '👀', '💯', '✨', '⚡', '🚀', '💎', '🌟', '💜']
 
-export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
-  const activeChatId = useChatStore((s) => s.activeChatId)
-  const otherUser = useChatStore((s) => s.activeChatOtherUser)
-  const messagesByChat = useChatStore((s) => s.messagesByChat)
+interface ChatWindowProps {
+  onBack: () => void
+  onOpenUserProfile: (userId: string) => void
+  onOpenGroupInfo: (groupId: string) => void
+}
+
+export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatWindowProps) {
+  const activeConversation = useChatStore((s) => s.activeConversation)
+  const messagesByConversation = useChatStore((s) => s.messagesByConversation)
   const currentUser = useChatStore((s) => s.currentUser)
   const onlineUsers = useChatStore((s) => s.onlineUsers)
   const typingByUserId = useChatStore((s) => s.typingByUserId)
+  const typingByGroup = useChatStore((s) => s.typingByGroup)
+  const groups = useChatStore((s) => s.groups)
   const addMessage = useChatStore((s) => s.addMessage)
   const markChatRead = useChatStore((s) => s.markChatRead)
   const updateMessage = useChatStore((s) => s.updateMessage)
@@ -46,9 +48,27 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const lastTypingSentRef = useRef<boolean>(false)
 
-  const messages = activeChatId ? messagesByChat[activeChatId] || [] : []
+  // Resolve active conversation into a unified shape
+  const isGroup = activeConversation?.type === 'group'
+  const activeId = isGroup
+    ? activeConversation!.groupId
+    : activeConversation?.type === 'direct'
+    ? activeConversation!.chatId
+    : null
+
+  const otherUser = !isGroup && activeConversation?.type === 'direct'
+    ? activeConversation.otherUser
+    : null
+
+  const group = isGroup ? activeConversation!.group : null
+
+  const messages = activeId ? messagesByConversation[activeId] || [] : []
   const isOnline = otherUser ? onlineUsers.some((u) => u.userId === otherUser.id) : false
-  const isTyping = otherUser ? typingByUserId[otherUser.id] : false
+  const isTyping = isGroup && group
+    ? typingByGroup[group.id]
+    : otherUser
+    ? typingByUserId[otherUser.id]
+    : false
 
   // Auto-scroll on new messages
   useEffect(() => {
@@ -59,42 +79,122 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
 
   // Mark as read when opening chat
   useEffect(() => {
-    if (activeChatId && otherUser) {
-      markChatRead(activeChatId)
+    if (!activeId || !activeConversation) return
+
+    markChatRead(activeId)
+    if (!isGroup && otherUser) {
       apiFetch(`/api/chats?action=read`, {
         method: 'PATCH',
-        body: JSON.stringify({ chatId: activeChatId }),
+        body: JSON.stringify({ chatId: activeId }),
       }).catch(() => {})
-
-      // Load messages if we haven't loaded them yet for this chat
-      const existing = useChatStore.getState().messagesByChat[activeChatId]
-      if (!existing || existing.length === 0) {
-        apiFetch<{ messages: ChatMessage[]; chatId: string }>(
-          `/api/chats?action=messages&chatId=${activeChatId}&limit=200`
-        )
-          .then((data) => {
-            if (data.messages && data.messages.length > 0) {
-              useChatStore.getState().setMessages(activeChatId, data.messages)
-            }
-          })
-          .catch((e) => console.error('[load messages]', e))
-      }
+    } else if (isGroup) {
+      apiFetch(`/api/groups/${activeId}/messages?action=read`, {
+        method: 'PATCH',
+      }).catch(() => {})
     }
-  }, [activeChatId, otherUser?.id, markChatRead])
+
+    // Load messages if not loaded yet
+    const existing = useChatStore.getState().messagesByConversation[activeId]
+    if (!existing || existing.length === 0) {
+      const endpoint = isGroup
+        ? `/api/groups/${activeId}/messages?limit=200`
+        : `/api/chats?action=messages&chatId=${activeId}&limit=200`
+      apiFetch<{ messages: ChatMessage[] }>(endpoint)
+        .then((data) => {
+          if (data.messages && data.messages.length > 0) {
+            useChatStore.getState().setMessages(activeId, data.messages)
+          }
+        })
+        .catch((e) => console.error('[load messages]', e))
+    }
+  }, [activeId, isGroup, markChatRead])
 
   const handleSend = async () => {
-    if (!input.trim() || !activeChatId || !otherUser || !currentUser) return
+    if (!input.trim() || !activeId || !currentUser || !activeConversation) return
     const text = input.trim()
     setInput('')
-
-    // Stop typing indicator
     sendTyping(false)
 
-    // Create temp message
     const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+    if (isGroup && group) {
+      // -------- Group message --------
+      const tempMessage: ChatMessage = {
+        id: tempId,
+        groupId: activeId,
+        content: text,
+        type: 'text',
+        senderId: currentUser.id,
+        receiverId: null,
+        read: false,
+        createdAt: new Date().toISOString(),
+        sender: {
+          id: currentUser.id,
+          username: currentUser.username,
+          displayName: currentUser.displayName,
+          avatarColor: currentUser.avatarColor,
+        },
+        pending: true,
+      }
+      addMessage(activeId, tempMessage)
+      upsertChat({
+        id: activeId,
+        isGroup: true,
+        group: {
+          id: group.id,
+          name: group.name,
+          description: group.description,
+          avatarColor: group.avatarColor,
+          creatorId: group.creatorId,
+          memberCount: group.members.length,
+        },
+        lastMessage: tempMessage,
+        unreadCount: 0,
+        updatedAt: new Date().toISOString(),
+      })
+
+      try {
+        const data = await apiFetch<{ message: ChatMessage; memberIds: string[]; tempId?: string }>(
+          `/api/messages`,
+          {
+            method: 'POST',
+            body: JSON.stringify({
+              groupId: activeId,
+              content: text,
+              type: 'text',
+              tempId,
+            }),
+          }
+        )
+        updateMessage(activeId, tempId, data.message)
+
+        // Broadcast to group members via WebSocket
+        const socket = (window as any).__zapchat_socket
+        if (socket && data.memberIds?.length > 0) {
+          socket.emit('group:message:send', {
+            messageId: data.message.id,
+            groupId: activeId,
+            senderId: currentUser.id,
+            memberIds: data.memberIds,
+            payload: data.message,
+          })
+        }
+      } catch (e: any) {
+        toast.error('Failed to send message')
+        updateMessage(activeId, tempId, {
+          ...tempMessage,
+          content: '⚠️ Failed: ' + text,
+          pending: false,
+        })
+      }
+      return
+    }
+
+    // -------- Direct message --------
+    if (!otherUser) return
     const tempMessage: ChatMessage = {
       id: tempId,
-      chatId: activeChatId,
+      chatId: activeId,
       content: text,
       type: 'text',
       senderId: currentUser.id,
@@ -109,11 +209,10 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
       },
       pending: true,
     }
-    addMessage(activeChatId, tempMessage)
-
-    // Update chat list preview
+    addMessage(activeId, tempMessage)
     upsertChat({
-      id: activeChatId,
+      id: activeId,
+      isGroup: false,
       otherUser,
       lastMessage: tempMessage,
       unreadCount: 0,
@@ -124,25 +223,56 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
       const data = await apiFetch<{ message: ChatMessage; tempId?: string }>(`/api/messages`, {
         method: 'POST',
         body: JSON.stringify({
-          chatId: activeChatId,
+          chatId: activeId,
           receiverId: otherUser.id,
           content: text,
           type: 'text',
           tempId,
         }),
       })
-      updateMessage(activeChatId, tempId, data.message)
+      updateMessage(activeId, tempId, data.message)
+
+      // Also emit via WebSocket for real-time delivery confirmation
+      const socket = (window as any).__zapchat_socket
+      if (socket) {
+        socket.emit('message:send', {
+          messageId: data.message.id,
+          chatId: activeId,
+          senderId: currentUser.id,
+          receiverId: otherUser.id,
+          content: data.message.content,
+          type: data.message.type,
+          createdAt: data.message.createdAt,
+        })
+      }
     } catch (e: any) {
       toast.error('Failed to send message')
-      // Remove the temp message on failure
-      updateMessage(activeChatId, tempId, { ...tempMessage, content: '⚠️ Failed to send: ' + text })
+      updateMessage(activeId, tempId, {
+        ...tempMessage,
+        content: '⚠️ Failed: ' + text,
+        pending: false,
+      })
     }
   }
 
   const sendTyping = (isTyping: boolean) => {
-    if (!otherUser || !currentUser) return
+    if (!currentUser || !activeConversation) return
     const socket = (window as any).__zapchat_socket
-    if (socket && socket.emit) {
+    if (!socket) return
+
+    if (isGroup && group) {
+      const memberIds = group.members
+        .filter((m) => m.user.id !== currentUser.id)
+        .map((m) => m.user.id)
+      socket.emit('group:typing', {
+        groupId: group.id,
+        fromUserId: currentUser.id,
+        fromUsername: currentUser.username,
+        fromDisplayName: currentUser.displayName,
+        memberIds,
+        isTyping,
+      })
+    } else if (otherUser) {
       socket.emit('typing', {
         fromUserId: currentUser.id,
         fromUsername: currentUser.username,
@@ -155,8 +285,6 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     setInput(e.target.value)
-    if (!otherUser) return
-    // Throttle typing events
     if (!lastTypingSentRef.current) {
       sendTyping(true)
     }
@@ -175,7 +303,7 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
 
   const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (!file || !activeChatId || !otherUser || !currentUser) return
+    if (!file || !activeId || !currentUser || !activeConversation) return
 
     setIsUploading(true)
     e.target.value = ''
@@ -191,14 +319,15 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
       const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
       const tempMessage: ChatMessage = {
         id: tempId,
-        chatId: activeChatId,
+        chatId: isGroup ? null : activeId,
+        groupId: isGroup ? activeId : null,
         content: isImage ? '📷 Photo' : `📎 ${file.name}`,
         type: isImage ? 'image' : 'file',
         fileUrl: uploadRes.url,
         fileName: uploadRes.fileName,
         fileSize: uploadRes.fileSize,
         senderId: currentUser.id,
-        receiverId: otherUser.id,
+        receiverId: isGroup ? null : otherUser?.id,
         read: false,
         createdAt: new Date().toISOString(),
         sender: {
@@ -209,29 +338,31 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
         },
         pending: true,
       }
-      addMessage(activeChatId, tempMessage)
-      upsertChat({
-        id: activeChatId,
-        otherUser,
-        lastMessage: tempMessage,
-        unreadCount: 0,
-        updatedAt: new Date().toISOString(),
-      })
+      addMessage(activeId, tempMessage)
 
-      const data = await apiFetch<{ message: ChatMessage }>(`/api/messages`, {
+      const body = isGroup && group
+        ? { groupId: activeId, content: tempMessage.content, type: tempMessage.type, fileUrl: uploadRes.url, fileName: uploadRes.fileName, fileSize: uploadRes.fileSize, tempId }
+        : { chatId: activeId, receiverId: otherUser!.id, content: tempMessage.content, type: tempMessage.type, fileUrl: uploadRes.url, fileName: uploadRes.fileName, fileSize: uploadRes.fileSize, tempId }
+
+      const data = await apiFetch<{ message: ChatMessage; memberIds?: string[] }>(`/api/messages`, {
         method: 'POST',
-        body: JSON.stringify({
-          chatId: activeChatId,
-          receiverId: otherUser.id,
-          content: tempMessage.content,
-          type: tempMessage.type,
-          fileUrl: uploadRes.url,
-          fileName: uploadRes.fileName,
-          fileSize: uploadRes.fileSize,
-          tempId,
-        }),
+        body: JSON.stringify(body),
       })
-      updateMessage(activeChatId, tempId, data.message)
+      updateMessage(activeId, tempId, data.message)
+
+      // Broadcast for group
+      if (isGroup) {
+        const socket = (window as any).__zapchat_socket
+        if (socket && data.memberIds?.length > 0) {
+          socket.emit('group:message:send', {
+            messageId: data.message.id,
+            groupId: activeId,
+            senderId: currentUser.id,
+            memberIds: data.memberIds,
+            payload: data.message,
+          })
+        }
+      }
     } catch (err: any) {
       toast.error(err.message || 'Upload failed')
     } finally {
@@ -240,22 +371,18 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
   }
 
   const handleDeleteMessage = async (messageId: string) => {
-    if (!activeChatId) return
+    if (!activeId) return
     try {
       await apiFetch(`/api/messages?id=${messageId}`, { method: 'DELETE' })
-      // Remove locally
-      const messages = useChatStore.getState().messagesByChat[activeChatId] || []
-      useChatStore.getState().setMessages(
-        activeChatId,
-        messages.filter((m) => m.id !== messageId)
-      )
+      useChatStore.getState().removeMessage(activeId, messageId)
       toast.success('Message deleted')
     } catch (e: any) {
       toast.error(e.message || 'Delete failed')
     }
   }
 
-  if (!otherUser) {
+  // -------- Empty state --------
+  if (!activeConversation) {
     return (
       <div className="flex-1 flex items-center justify-center bg-background chat-pattern-bg">
         <div className="text-center max-w-md p-6">
@@ -264,56 +391,94 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
           </div>
           <h2 className="text-xl font-bold mb-2">Welcome to ZapChat</h2>
           <p className="text-sm text-muted-foreground">
-            Select a conversation from the sidebar, or start a new one to begin messaging.
-            All your conversations are end-to-end secured and stored locally on your devices.
+            Select a conversation from the sidebar, start a new chat, or create a group.
           </p>
         </div>
       </div>
     )
   }
 
+  // -------- Header content --------
+  const headerContent = isGroup && group ? (
+    <>
+      <Avatar name={group.name} color={group.avatarColor} size="md" />
+      <div className="min-w-0">
+        <p className="font-semibold truncate">{group.name}</p>
+        <p className="text-xs text-muted-foreground truncate">
+          {isTyping ? (
+            <span className="text-primary inline-flex items-center gap-1">
+              {typeof isTyping === 'object' && isTyping ? `${isTyping.username} is typing` : 'typing'}
+              <span className="inline-flex">
+                <span className="animate-pulse-dot" style={{ animationDelay: '0s' }}>.</span>
+                <span className="animate-pulse-dot" style={{ animationDelay: '0.2s' }}>.</span>
+                <span className="animate-pulse-dot" style={{ animationDelay: '0.4s' }}>.</span>
+              </span>
+            </span>
+          ) : (
+            <span>{group.members.length} members</span>
+          )}
+        </p>
+      </div>
+    </>
+  ) : otherUser ? (
+    <>
+      <Avatar
+        name={otherUser.displayName}
+        color={otherUser.avatarColor}
+        size="md"
+        online={isOnline}
+      />
+      <div className="min-w-0">
+        <p className="font-semibold truncate">{otherUser.displayName}</p>
+        <p className="text-xs text-muted-foreground truncate">
+          {isTyping ? (
+            <span className="text-primary inline-flex items-center gap-1">
+              typing
+              <span className="inline-flex">
+                <span className="animate-pulse-dot" style={{ animationDelay: '0s' }}>.</span>
+                <span className="animate-pulse-dot" style={{ animationDelay: '0.2s' }}>.</span>
+                <span className="animate-pulse-dot" style={{ animationDelay: '0.4s' }}>.</span>
+              </span>
+            </span>
+          ) : isOnline ? (
+            <span className="text-green-500">online</span>
+          ) : (
+            `last seen ${formatTimeFull(otherUser.lastSeen)}`
+          )}
+        </p>
+      </div>
+    </>
+  ) : null
+
+  const headerClick = () => {
+    if (isGroup && group) {
+      onOpenGroupInfo(group.id)
+    } else if (otherUser) {
+      onOpenUserProfile(otherUser.id)
+    }
+  }
+
   return (
     <div className="flex-1 flex flex-col bg-background">
       {/* Header */}
       <div className="h-16 px-3 sm:px-4 border-b border-border flex items-center gap-3 bg-card/80 backdrop-blur-md shrink-0">
-        <Button
-          variant="ghost"
-          size="icon"
-          className="md:hidden -ml-1"
-          onClick={onBack}
-        >
+        <Button variant="ghost" size="icon" className="md:hidden -ml-1" onClick={onBack}>
           <ArrowLeft className="h-5 w-5" />
         </Button>
 
         <button
-          onClick={() => onOpenProfile(otherUser.id)}
+          onClick={headerClick}
           className="flex items-center gap-3 flex-1 min-w-0 hover:opacity-90 transition-opacity text-left"
         >
-          <Avatar
-            name={otherUser.displayName}
-            color={otherUser.avatarColor}
-            size="md"
-            online={isOnline}
-          />
-          <div className="min-w-0">
-            <p className="font-semibold truncate">{otherUser.displayName}</p>
-            <p className="text-xs text-muted-foreground truncate">
-              {isTyping ? (
-                <span className="text-primary inline-flex items-center gap-1">
-                  typing
-                  <span className="inline-flex">
-                    <span className="animate-pulse-dot" style={{ animationDelay: '0s' }}>.</span>
-                    <span className="animate-pulse-dot" style={{ animationDelay: '0.2s' }}>.</span>
-                    <span className="animate-pulse-dot" style={{ animationDelay: '0.4s' }}>.</span>
-                  </span>
-                </span>
-              ) : isOnline ? (
-                <span className="text-green-500">online</span>
-              ) : (
-                `last seen ${formatTimeFull(otherUser.lastSeen)}`
-              )}
-            </p>
-          </div>
+          {isGroup && group ? (
+            <div
+              className="relative h-10 w-10 rounded-full flex items-center justify-center text-white ring-2 ring-background shrink-0"
+              style={{ background: group.avatarColor }}
+            >
+              <Users className="h-5 w-5" />
+            </div>
+          ) : null}
+          {headerContent}
         </button>
 
         <div className="flex items-center gap-1">
@@ -330,8 +495,8 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuItem onClick={() => onOpenProfile(otherUser.id)}>
-                View profile
+              <DropdownMenuItem onClick={headerClick}>
+                {isGroup ? 'View group info' : 'View profile'}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem
@@ -339,12 +504,6 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
                 onClick={() => toast.info('Clear chat — coming soon')}
               >
                 Clear chat
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                className="text-destructive"
-                onClick={() => toast.info('Block user — coming soon')}
-              >
-                Block user
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -359,20 +518,33 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
               {messages.length === 0 ? (
                 <div className="text-center py-12">
                   <p className="text-sm text-muted-foreground">
-                    👋 Say hello to {otherUser.displayName}!
+                    {isGroup && group
+                      ? `👋 Be the first to say hi in "${group.name}"!`
+                      : `👋 Say hello to ${otherUser?.displayName}!`}
                   </p>
                 </div>
               ) : (
                 messages.map((msg, idx) => {
                   const isOwn = msg.senderId === currentUser?.id
-                  const showAvatar = !isOwn && (idx === 0 || messages[idx - 1].senderId !== msg.senderId)
+                  const prevMsg = messages[idx - 1]
+                  const nextMsg = messages[idx + 1]
+                  const showAvatar = !isOwn && (
+                    !prevMsg || prevMsg.senderId !== msg.senderId
+                  )
+                  const showSenderName = isGroup && !isOwn && (
+                    !prevMsg || prevMsg.senderId !== msg.senderId
+                  )
+                  const isLastInGroup = !nextMsg || nextMsg.senderId !== msg.senderId
                   return (
                     <MessageBubble
                       key={msg.id}
                       message={msg}
                       isOwn={isOwn}
                       showAvatar={showAvatar}
+                      showSenderName={showSenderName}
+                      isLastInGroup={isLastInGroup}
                       otherUser={otherUser}
+                      isGroup={!!isGroup}
                       onDelete={() => handleDeleteMessage(msg.id)}
                     />
                   )
@@ -380,7 +552,9 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
               )}
               {isTyping && (
                 <div className="flex items-end gap-2 max-w-[70%]">
-                  <Avatar name={otherUser.displayName} color={otherUser.avatarColor} size="sm" />
+                  {otherUser && (
+                    <Avatar name={otherUser.displayName} color={otherUser.avatarColor} size="sm" />
+                  )}
                   <div className="bg-card border border-border rounded-2xl rounded-bl-sm px-4 py-3 flex items-center gap-1">
                     <span className="animate-pulse-dot text-lg" style={{ animationDelay: '0s' }}>.</span>
                     <span className="animate-pulse-dot text-lg" style={{ animationDelay: '0.2s' }}>.</span>
@@ -435,11 +609,7 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
             disabled={isUploading}
             title="Attach file"
           >
-            {isUploading ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <Paperclip className="h-5 w-5" />
-            )}
+            {isUploading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Paperclip className="h-5 w-5" />}
           </Button>
           <Button
             variant="ghost"
@@ -454,7 +624,7 @@ export function ChatWindow({ onBack, onOpenProfile }: ChatWindowProps) {
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
-            placeholder="Type a message..."
+            placeholder={isGroup ? `Message ${group?.name || 'group'}` : 'Type a message...'}
             className="flex-1 h-11 bg-background border-border"
             disabled={isUploading}
           />
@@ -479,111 +649,152 @@ function MessageBubble({
   message,
   isOwn,
   showAvatar,
+  showSenderName,
+  isLastInGroup,
   otherUser,
+  isGroup,
   onDelete,
 }: {
   message: ChatMessage
   isOwn: boolean
   showAvatar: boolean
+  showSenderName: boolean
+  isLastInGroup: boolean
   otherUser: any
+  isGroup: boolean
   onDelete: () => void
 }) {
   const [imageOpen, setImageOpen] = useState(false)
+  const senderName = message.sender?.displayName || ''
+  const senderColor = message.sender?.avatarColor || '#6366f1'
 
   return (
     <div className={cn('flex items-end gap-2 group', isOwn ? 'justify-end' : 'justify-start')}>
       {!isOwn && (
         <div className="w-8 shrink-0">
-          {showAvatar && <Avatar name={otherUser.displayName} color={otherUser.avatarColor} size="sm" />}
+          {showAvatar && (
+            <Avatar name={senderName} color={senderColor} size="sm" />
+          )}
         </div>
       )}
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <div
-            className={cn(
-              'max-w-[80%] sm:max-w-[70%] px-3 py-2 rounded-2xl cursor-pointer relative transition-all animate-message-in',
-              isOwn
-                ? 'bg-primary text-primary-foreground rounded-br-sm'
-                : 'bg-card border border-border rounded-bl-sm',
-              message.pending && 'opacity-70'
-            )}
+      <div
+        className={cn(
+          'max-w-[80%] sm:max-w-[70%] relative',
+          isOwn ? 'items-end' : 'items-start',
+          'flex flex-col'
+        )}
+      >
+        {showSenderName && !isOwn && (
+          <span
+            className="text-xs font-medium mb-0.5 ml-1"
+            style={{ color: senderColor }}
           >
-            {message.type === 'image' && message.fileUrl ? (
-              <div className="space-y-1">
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setImageOpen(true)
-                  }}
-                  className="block"
+            {senderName}
+          </span>
+        )}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <div
+              className={cn(
+                'px-3 py-2 rounded-2xl cursor-pointer relative transition-all animate-message-in',
+                isOwn
+                  ? 'bg-primary text-primary-foreground ' + (isLastInGroup ? 'rounded-br-sm' : '')
+                  : 'bg-card border border-border ' + (isLastInGroup ? 'rounded-bl-sm' : ''),
+                message.pending && 'opacity-70'
+              )}
+            >
+              {message.type === 'image' && message.fileUrl ? (
+                <div className="space-y-1">
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setImageOpen(true) }}
+                    className="block"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={message.fileUrl}
+                      alt={message.fileName || 'image'}
+                      className="rounded-lg max-h-64 max-w-full object-cover"
+                    />
+                  </button>
+                  {message.content && message.content !== '📷 Photo' && (
+                    <p className="text-sm">{message.content}</p>
+                  )}
+                </div>
+              ) : message.type === 'file' && message.fileUrl ? (
+                <a
+                  href={message.fileUrl}
+                  download={message.fileName || 'file'}
+                  onClick={(e) => e.stopPropagation()}
+                  className="flex items-center gap-3 py-1 min-w-[200px]"
                 >
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={message.fileUrl}
-                    alt={message.fileName || 'image'}
-                    className="rounded-lg max-h-64 max-w-full object-cover"
-                  />
-                </button>
-                {message.content && message.content !== '📷 Photo' && (
-                  <p className="text-sm">{message.content}</p>
+                  <div className="h-10 w-10 rounded-lg bg-background/20 flex items-center justify-center shrink-0">
+                    <FileIcon className="h-5 w-5" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium truncate">{message.fileName}</p>
+                    {message.fileSize && (
+                      <p className="text-xs opacity-70">{formatBytes(message.fileSize)}</p>
+                    )}
+                  </div>
+                </a>
+              ) : (
+                <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
+              )}
+
+              <div className={cn(
+                'flex items-center gap-1 mt-1 text-[10px]',
+                isOwn ? 'text-primary-foreground/70' : 'text-muted-foreground'
+              )}>
+                {message.pending ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <>
+                    <span>{formatTimeFull(message.createdAt)}</span>
+                    {isOwn && (
+                      message.read ? <CheckCheck className="h-3 w-3" /> : <Check className="h-3 w-3" />
+                    )}
+                  </>
                 )}
               </div>
-            ) : message.type === 'file' && message.fileUrl ? (
-              <a
-                href={message.fileUrl}
-                download={message.fileName || 'file'}
-                onClick={(e) => e.stopPropagation()}
-                className="flex items-center gap-3 py-1 min-w-[200px]"
-              >
-                <div className="h-10 w-10 rounded-lg bg-background/20 flex items-center justify-center shrink-0">
-                  <FileIcon className="h-5 w-5" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium truncate">{message.fileName}</p>
-                  {message.fileSize && (
-                    <p className="text-xs opacity-70">{formatBytes(message.fileSize)}</p>
-                  )}
-                </div>
-              </a>
-            ) : (
-              <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
-            )}
-
-            <div className={cn('flex items-center gap-1 mt-1 text-[10px]', isOwn ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
-              {message.pending ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <>
-                  <span>{formatTimeFull(message.createdAt)}</span>
-                  {isOwn && (
-                    message.read ? (
-                      <CheckCheck className="h-3 w-3" />
-                    ) : (
-                      <Check className="h-3 w-3" />
-                    )
-                  )}
-                </>
-              )}
             </div>
-          </div>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align={isOwn ? 'end' : 'start'}>
-          {isOwn && (
-            <>
-              <DropdownMenuItem onClick={onDelete} className="text-destructive">
-                Delete message
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-            </>
-          )}
-          <DropdownMenuItem
-            onClick={() => navigator.clipboard?.writeText(message.content)}
-          >
-            Copy text
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align={isOwn ? 'end' : 'start'}>
+            {isOwn && (
+              <>
+                <DropdownMenuItem onClick={onDelete} className="text-destructive">
+                  Delete message
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
+            <DropdownMenuItem
+              onClick={() => navigator.clipboard?.writeText(message.content)}
+            >
+              Copy text
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+
+      {/* Image preview modal */}
+      {imageOpen && message.fileUrl && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4"
+          onClick={() => setImageOpen(false)}
+        >
+          <button className="absolute top-4 right-4 text-white/80 hover:text-white p-2">
+            <X className="h-6 w-6" />
+          </button>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={message.fileUrl}
+            alt={message.fileName || 'image'}
+            className="max-h-[90vh] max-w-full object-contain rounded-lg"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   )
 }
