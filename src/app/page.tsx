@@ -12,6 +12,10 @@ import { CreateStoryModal } from '@/components/chat/CreateStoryModal'
 import { CreateBotModal } from '@/components/chat/CreateBotModal'
 import { StoriesViewer } from '@/components/chat/StoriesViewer'
 import { CallPanel } from '@/components/chat/CallPanel'
+import { AdminPanel } from '@/components/chat/AdminPanel'
+import { GroupSettingsPanel } from '@/components/chat/GroupSettingsPanel'
+import { ChatSettingsPanel } from '@/components/chat/ChatSettingsPanel'
+import { ChannelView } from '@/components/chat/ChannelView'
 import { ProfilePanel } from '@/components/chat/ProfilePanel'
 import { GroupInfoPanel } from '@/components/chat/GroupInfoPanel'
 import { useChatSocket } from '@/components/chat/useChatSocket'
@@ -47,6 +51,23 @@ export default function Home() {
   const call = useExtendedStore((s) => s.call)
   const setCall = useExtendedStore((s) => s.setCall)
 
+  // Admin panel
+  const showAdminPanel = useExtendedStore((s) => s.showAdminPanel)
+  const setShowAdminPanel = useExtendedStore((s) => s.setShowAdminPanel)
+
+  // Active channel for channel view
+  const activeChannel = useExtendedStore((s) => s.activeChannel)
+  const setActiveChannel = useExtendedStore((s) => s.setActiveChannel)
+
+  // Group settings panel
+  const [showGroupSettings, setShowGroupSettings] = useState(false)
+  const [groupSettingsId, setGroupSettingsId] = useState<string | null>(null)
+
+  // Chat settings panel
+  const [showChatSettings, setShowChatSettings] = useState(false)
+  const [chatSettingsChatId, setChatSettingsChatId] = useState<string | null>(null)
+  const [chatSettingsGroupId, setChatSettingsGroupId] = useState<string | null>(null)
+
   const [showProfile, setShowProfile] = useState(false)
   const [viewProfileId, setViewProfileId] = useState<string | null>(null)
   const [viewGroupId, setViewGroupId] = useState<string | null>(null)
@@ -66,6 +87,18 @@ export default function Home() {
       return () => clearTimeout(t)
     }
   }, [showGroupInfoPanel])
+
+  // Listen for "openGroupSettings" event (fired by GroupInfoPanel)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const customEvent = e as CustomEvent<string>
+      setGroupSettingsId(customEvent.detail)
+      setShowGroupSettings(true)
+      setShowGroupInfoPanel(false)
+    }
+    window.addEventListener('openGroupSettings', handler)
+    return () => window.removeEventListener('openGroupSettings', handler)
+  }, [])
 
   if (isAuthLoading) {
     return (
@@ -105,22 +138,40 @@ export default function Home() {
             setViewGroupId(groupId)
             setShowGroupInfoPanel(true)
           }}
+          onOpenAdmin={() => setShowAdminPanel(true)}
         />
       </aside>
 
-      {/* Main chat area */}
-      <main className={`${hasActive ? 'flex' : 'hidden md:flex'} flex-1 min-w-0`}>
-        <ChatWindow
-          onBack={() => useChatStore.getState().setActiveConversation(null)}
-          onOpenUserProfile={(userId) => {
-            setViewProfileId(userId)
-            setShowProfile(true)
-          }}
-          onOpenGroupInfo={(groupId) => {
-            setViewGroupId(groupId)
-            setShowGroupInfoPanel(true)
-          }}
-        />
+      {/* Main chat area - either chat or channel view */}
+      <main className={`${(hasActive || activeChannel) ? 'flex' : 'hidden md:flex'} flex-1 min-w-0`}>
+        {activeChannel ? (
+          <ChannelView
+            channel={activeChannel}
+            onBack={() => setActiveChannel(null)}
+            onOpenAdmin={() => setShowAdminPanel(true)}
+          />
+        ) : (
+          <ChatWindow
+            onBack={() => useChatStore.getState().setActiveConversation(null)}
+            onOpenUserProfile={(userId) => {
+              setViewProfileId(userId)
+              setShowProfile(true)
+            }}
+            onOpenGroupInfo={(groupId) => {
+              setViewGroupId(groupId)
+              setShowGroupInfoPanel(true)
+            }}
+            onOpenGroupSettings={(groupId) => {
+              setGroupSettingsId(groupId)
+              setShowGroupSettings(true)
+            }}
+            onOpenChatSettings={(chatId, groupId) => {
+              setChatSettingsChatId(chatId || null)
+              setChatSettingsGroupId(groupId || null)
+              setShowChatSettings(true)
+            }}
+          />
+        )}
       </main>
 
       {/* Modals */}
@@ -138,6 +189,18 @@ export default function Home() {
         open={showGroupInfoPanel}
         onOpenChange={setShowGroupInfoPanel}
         groupId={viewGroupId}
+      />
+      <AdminPanel open={showAdminPanel} onOpenChange={setShowAdminPanel} />
+      <GroupSettingsPanel
+        open={showGroupSettings}
+        onOpenChange={setShowGroupSettings}
+        groupId={groupSettingsId}
+      />
+      <ChatSettingsPanel
+        open={showChatSettings}
+        onOpenChange={setShowChatSettings}
+        chatId={chatSettingsChatId}
+        groupId={chatSettingsGroupId}
       />
 
       {/* Stories viewer */}

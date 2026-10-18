@@ -3,7 +3,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import {
   Search, Plus, Settings, Zap, LogOut, CheckCheck, Check, X,
-  Users, MessageCircle, Radio, Bot, Camera, MoreVertical, Archive,
+  Users, MessageCircle, Radio, Bot, Camera, MoreVertical, Archive, Shield,
 } from 'lucide-react'
 import { Avatar } from './Avatar'
 import { StoriesBar } from './StoriesBar'
@@ -28,11 +28,12 @@ interface ChatListProps {
   onOpenCreateBot: () => void
   onOpenProfile: () => void
   onOpenGroupInfo: (groupId: string) => void
+  onOpenAdmin: () => void
 }
 
 export function ChatList({
   onOpenNewChat, onOpenCreateGroup, onOpenCreateChannel,
-  onOpenCreateStory, onOpenCreateBot, onOpenProfile, onOpenGroupInfo,
+  onOpenCreateStory, onOpenCreateBot, onOpenProfile, onOpenGroupInfo, onOpenAdmin,
 }: ChatListProps) {
   const chats = useChatStore((s) => s.chats)
   const setChats = useChatStore((s) => s.setChats)
@@ -216,6 +217,17 @@ export function ChatList({
             >
               <Settings className="h-5 w-5" />
             </Button>
+            {currentUser?.role === 'admin' && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-9 w-9 rounded-full hover:bg-sidebar-accent text-primary"
+                onClick={onOpenAdmin}
+                title="Admin panel"
+              >
+                <Shield className="h-5 w-5" />
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"

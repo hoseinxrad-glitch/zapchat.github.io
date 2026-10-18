@@ -96,6 +96,8 @@ async function handleRegister(req: NextRequest) {
         displayName: user.displayName,
         bio: user.bio,
         avatarColor: user.avatarColor,
+        role: user.role,
+        isBanned: user.isBanned,
         createdAt: user.createdAt,
       },
     })
@@ -125,6 +127,10 @@ async function handleLogin(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 })
     }
 
+    if (user.isBanned) {
+      return NextResponse.json({ error: 'Your account has been banned. Contact support.' }, { status: 403 })
+    }
+
     await db.user.update({
       where: { id: user.id },
       data: { lastSeen: new Date() },
@@ -140,6 +146,8 @@ async function handleLogin(req: NextRequest) {
         displayName: user.displayName,
         bio: user.bio,
         avatarColor: user.avatarColor,
+        role: user.role,
+        isBanned: user.isBanned,
         createdAt: user.createdAt,
       },
     })
@@ -170,6 +178,8 @@ async function handleMe(req: NextRequest) {
       displayName: user.displayName,
       bio: user.bio,
       avatarColor: user.avatarColor,
+      role: user.role,
+      isBanned: user.isBanned,
       createdAt: user.createdAt,
       lastSeen: user.lastSeen,
     },

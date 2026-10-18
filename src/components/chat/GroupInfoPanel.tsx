@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { X, Loader2, Users, Plus, UserMinus, Crown, LogOut, Trash2, Search, Shield } from 'lucide-react'
+import { X, Loader2, Users, Plus, UserMinus, Crown, LogOut, Trash2, Search, Shield, Settings } from 'lucide-react'
 import { Avatar } from './Avatar'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -238,6 +238,20 @@ export function GroupInfoPanel({ open, onOpenChange, groupId }: GroupInfoPanelPr
 
               {/* Actions */}
               <div className="space-y-2 pt-4 border-t border-border">
+                {isAdmin && (
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    onClick={() => {
+                      // Open settings via the admin button in the parent
+                      const event = new CustomEvent('openGroupSettings', { detail: group.id })
+                      window.dispatchEvent(event)
+                    }}
+                  >
+                    <Settings className="h-4 w-4 mr-2" />
+                    Open settings
+                  </Button>
+                )}
                 {!isCreator && (
                   <Button
                     variant="outline"

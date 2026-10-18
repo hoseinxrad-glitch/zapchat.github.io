@@ -23,7 +23,7 @@ import { toast } from 'sonner'
 import { ReactionPicker } from './ReactionPicker'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { VoiceRecorder } from './VoiceRecorder'
-import { AudioPlayer } from './AudioPlayer'
+import { CircularVoicePlayer as AudioPlayer } from './CircularVoicePlayer'
 
 const EMOJIS = ['😀', '😂', '❤️', '👍', '👎', '🔥', '🎉', '🙏', '😍', '😮', '😢', '🤔', '👀', '💯', '✨', '⚡', '🚀', '💎', '🌟', '💜']
 
@@ -31,9 +31,14 @@ interface ChatWindowProps {
   onBack: () => void
   onOpenUserProfile: (userId: string) => void
   onOpenGroupInfo: (groupId: string) => void
+  onOpenGroupSettings: (groupId: string) => void
+  onOpenChatSettings: (chatId?: string, groupId?: string) => void
 }
 
-export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatWindowProps) {
+export function ChatWindow({
+  onBack, onOpenUserProfile, onOpenGroupInfo,
+  onOpenGroupSettings, onOpenChatSettings,
+}: ChatWindowProps) {
   const activeConversation = useChatStore((s) => s.activeConversation)
   const messagesByConversation = useChatStore((s) => s.messagesByConversation)
   const currentUser = useChatStore((s) => s.currentUser)
@@ -741,6 +746,21 @@ export function ChatWindow({ onBack, onOpenUserProfile, onOpenGroupInfo }: ChatW
             <DropdownMenuContent align="end">
               <DropdownMenuItem onClick={headerClick}>
                 {isGroup ? 'Group info' : 'View profile'}
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => {
+                if (isGroup && group) onOpenGroupSettings(group.id)
+                else if (!isGroup && activeId) onOpenChatSettings(activeId)
+              }}>
+                <Settings className="h-4 w-4 mr-2" />
+                {isGroup ? 'Group settings' : 'Chat settings'}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => {
+                if (isGroup && group) onOpenChatSettings(undefined, group.id)
+                else if (!isGroup && activeId) onOpenChatSettings(activeId)
+              }}>
+                <Bell className="h-4 w-4 mr-2" />
+                Notifications & archive
               </DropdownMenuItem>
               <DropdownMenuSeparator />
               <DropdownMenuItem className="text-destructive" onClick={() => toast.info('Clear chat — coming soon')}>

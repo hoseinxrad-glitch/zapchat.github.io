@@ -219,6 +219,11 @@ export function ProfilePanel({ open, onOpenChange, viewUserId }: ProfilePanelPro
               </Button>
             </div>
 
+            {/* Claim admin (only if no admin exists yet) */}
+            {currentUser.role !== 'admin' && (
+              <ClaimAdminSection />
+            )}
+
             {/* About ZapChat */}
             <div className="space-y-3 pt-6 border-t border-border">
               <h3 className="text-xs uppercase tracking-wider text-muted-foreground">About ZapChat</h3>
@@ -246,5 +251,73 @@ export function ProfilePanel({ open, onOpenChange, viewUserId }: ProfilePanelPro
         </ScrollArea>
       </SheetContent>
     </Sheet>
+  )
+}
+
+// ============================================================
+// ClaimAdminSection - lets the user become admin if no admin exists
+// ============================================================
+function ClaimAdminSection() {
+  const [loading, setLoading] = useState(false)
+  const [checking, setChecking] = useState(true)
+  const [adminExists, setAdminExists] = useState(false)
+  const setCurrentUser = useChatStore((s) => s.setCurrentUser)
+
+  useEffect(() => {
+    // Check if admin already exists by calling claim-admin (it will return 403 if admin exists)
+    apiFetch('/api/auth/claim-admin', { method: 'POST' })
+      .then(() => {
+        // If it succeeded, we just became admin!
+        setAdminExists(false)
+      })
+      .catch((e) => {
+        // 403 means admin already exists
+        setAdminExists(e.status === 403)
+      })
+      .finally(() => setChecking(false))
+  }, [])
+
+  const handleClaim = async () => {
+    setLoading(true)
+    try {
+      const data = await apiFetch<{ user: any; message: string }>('/api/auth/claim-admin', { method: 'POST' })
+      // Update store + localStorage
+      setCurrentUser(data.user)
+      if (typeof window !== 'undefined') {
+        localStorage.setItem('zapchat_user', JSON.stringify(data.user))
+      }
+      toast.success(data.message || 'You are now an admin!')
+      setAdminExists(true)
+    } catch (e: any) {
+      if (e.status === 403) {
+        setAdminExists(true)
+        toast.info('An admin already exists')
+      } else {
+        toast.error(e.message || 'Failed to claim admin')
+      }
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (checking || adminExists) return null
+
+  return (
+    <div className="space-y-3 pt-6 border-t border-border">
+      <h3 className="text-xs uppercase tracking-wider text-muted-foreground">Become Admin</h3>
+      <div className="p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+        <div className="flex items-center gap-2 mb-2">
+          <Shield className="h-4 w-4 text-amber-500" />
+          <p className="text-sm font-medium">No admin exists yet</p>
+        </div>
+        <p className="text-xs text-muted-foreground mb-3">
+          Be the first to claim admin privileges and manage the entire site (users, channels, bots, stories).
+        </p>
+        <Button className="w-full" disabled={loading} onClick={handleClaim}>
+          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+          Claim admin role
+        </Button>
+      </div>
+    </div>
   )
 }

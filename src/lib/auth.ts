@@ -67,3 +67,19 @@ export function getAuthUser(req: Request): { userId: string; username: string } 
   if (!payload) return null
   return { userId: payload.userId, username: payload.username }
 }
+
+// ============================================================
+// Admin check - returns user if admin, otherwise null
+// ============================================================
+export async function requireAdmin(req: Request): Promise<{ userId: string; username: string } | null> {
+  const authUser = getAuthUser(req)
+  if (!authUser) return null
+  // Dynamic import to avoid circular dependency
+  const { db } = await import('@/lib/db')
+  const user = await db.user.findUnique({
+    where: { id: authUser.userId },
+    select: { role: true, isBanned: true },
+  })
+  if (!user || user.isBanned || user.role !== 'admin') return null
+  return authUser
+}

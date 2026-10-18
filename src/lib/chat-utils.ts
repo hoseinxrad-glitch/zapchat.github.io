@@ -11,6 +11,8 @@ export interface AuthUser {
   displayName: string
   bio: string
   avatarColor: string
+  role?: 'admin' | 'user'
+  isBanned?: boolean
   createdAt: string
   lastSeen?: string
 }

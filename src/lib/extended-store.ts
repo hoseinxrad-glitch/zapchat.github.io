@@ -147,6 +147,8 @@ interface ExtendedState {
   setShowStoriesViewer: (v: boolean) => void
   viewingStoryGroupIndex: number
   setViewingStoryGroupIndex: (i: number) => void
+  showAdminPanel: boolean
+  setShowAdminPanel: (v: boolean) => void
 }
 
 export const useExtendedStore = create<ExtendedState>((set) => ({
@@ -279,4 +281,6 @@ export const useExtendedStore = create<ExtendedState>((set) => ({
   setShowStoriesViewer: (v) => set({ showStoriesViewer: v }),
   viewingStoryGroupIndex: 0,
   setViewingStoryGroupIndex: (i) => set({ viewingStoryGroupIndex: i }),
+  showAdminPanel: false,
+  setShowAdminPanel: (v) => set({ showAdminPanel: v }),
 }))
