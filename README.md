@@ -4,6 +4,8 @@
 
 ZapChat is a privacy-first, open-source messenger that requires **no phone number**. Built with Next.js 16, Socket.io, and Prisma, it deploys free on GitHub Pages + Render.
 
+📖 **[Read the Deployment Guide →](./DEPLOYMENT.md)** — full instructions for Render and GitHub Pages.
+
 ## ✨ Features
 
 - 🔐 **No phone number required** — sign up with just a username

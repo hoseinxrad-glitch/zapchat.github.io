@@ -1,0 +1,12 @@
+FROM postgres:16-alpine
+
+# Default values can be overridden via env vars
+ENV POSTGRES_USER=zapchat
+ENV POSTGRES_DB=zapchat
+ENV POSTGRES_HOST_AUTH_METHOD=trust
+ENV PGDATA=/var/lib/postgresql/data/pgdata
+
+# Use a persistent volume for the database
+VOLUME /var/lib/postgresql/data
+
+EXPOSE 5432

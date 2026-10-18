@@ -38,14 +38,20 @@ jobs:
       - name: Build static export
         env:
           # GitHub Pages serves at /REPO_NAME/, so we need this base path
-          # Replace 'zapchat' with your repository name
-          NEXT_BASE_PATH: /zapchat
-          NEXT_ASSETS_PREFIX: /zapchat/
-          # Set this to your Render URL after deploying the server
-          NEXT_PUBLIC_SOCKET_URL: https://your-render-app.onrender.com
-          # Generate a strong random secret for JWT signing
+          # IMPORTANT: Replace 'zapchat' below with your actual repository name
+          NEXT_BASE_PATH: ${{ secrets.NEXT_BASE_PATH || '/zapchat' }}
+          NEXT_ASSETS_PREFIX: ${{ secrets.NEXT_BASE_PATH || '/zapchat' }}
+          # Set this to your Render app URL after deploying the backend
+          # Format: https://your-app-name.onrender.com
+          NEXT_PUBLIC_SOCKET_URL: ${{ secrets.NEXT_PUBLIC_SOCKET_URL }}
+          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
+          # JWT secret for signing auth tokens
+          # Generate with: openssl rand -hex 32
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
         run: npm run build:static
+
+      - name: Add .nojekyll (to bypass Jekyll processing)
+        run: touch ./out/.nojekyll
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3

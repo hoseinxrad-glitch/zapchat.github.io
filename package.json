@@ -7,6 +7,7 @@
     "build": "next build && cp -r .next/static .next/standalone/.next/ && cp -r public .next/standalone/",
     "build:static": "NEXT_OUTPUT=export next build",
     "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
+    "start:prod": "npx prisma db push --accept-data-loss && node .next/standalone/server.js",
     "lint": "eslint .",
     "db:push": "prisma db push --accept-data-loss",
     "db:generate": "prisma generate",
