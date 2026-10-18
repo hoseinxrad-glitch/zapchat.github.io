@@ -1133,146 +1133,162 @@ function MessageBubble({
         )}
 
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <div
-              ref={(el) => { /* store for picker positioning */ }}
-              className={cn(
-                'px-3 py-2 rounded-2xl cursor-pointer relative transition-all animate-message-in',
-                isOwn
-                  ? 'bg-primary text-primary-foreground ' + (isLastInGroup ? 'rounded-br-sm' : '')
-                  : 'bg-card border border-border ' + (isLastInGroup ? 'rounded-bl-sm' : ''),
-                message.pending && 'opacity-70'
-              )}
-              onClick={(e) => {
-                // Right-click context menu style
-                if (e.detail === 2) {
-                  // Double-click for quick reaction
-                  onToggleReaction('❤️')
-                }
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                const target = e.currentTarget
-                setBubbleRef(target.getBoundingClientRect())
-                setShowReactionPicker(true)
-              }}
-            >
-              {/* Silent indicator */}
-              {message.silent && (
-                <span className="absolute -top-2 -right-2 bg-background border border-border rounded-full p-0.5" title="Silent message">
-                  <BellOff className="h-3 w-3 text-muted-foreground" />
-                </span>
-              )}
+          {/* The message bubble itself - NOT a dropdown trigger */}
+          <div
+            ref={(el) => { /* store for picker positioning */ }}
+            className={cn(
+              'px-3 py-2 rounded-2xl cursor-pointer relative transition-all animate-message-in group/msg',
+              isOwn
+                ? 'bg-primary text-primary-foreground ' + (isLastInGroup ? 'rounded-br-sm' : '')
+                : 'bg-card border border-border ' + (isLastInGroup ? 'rounded-bl-sm' : ''),
+              message.pending && 'opacity-70'
+            )}
+            onClick={(e) => {
+              // Double-click for quick reaction
+              if (e.detail === 2) {
+                onToggleReaction('❤️')
+              }
+            }}
+            onContextMenu={(e) => {
+              e.preventDefault()
+              const target = e.currentTarget
+              setBubbleRef(target.getBoundingClientRect())
+              setShowReactionPicker(true)
+            }}
+          >
+            {/* Silent indicator */}
+            {message.silent && (
+              <span className="absolute -top-2 -right-2 bg-background border border-border rounded-full p-0.5" title="Silent message">
+                <BellOff className="h-3 w-3 text-muted-foreground" />
+              </span>
+            )}
 
-              {message.type === 'image' && message.fileUrl ? (
-                <div className="space-y-1">
-                  {message.isSpoiler && !spoilerRevealed ? (
-                    <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="image" />
-                  ) : (
-                    <button onClick={(e) => { e.stopPropagation(); setImageOpen(true) }} className="block relative group/img">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={message.fileUrl} alt={message.fileName || 'image'} className="rounded-lg max-h-64 max-w-full object-cover" />
-                      <div className="absolute top-1 right-1 opacity-0 group-hover/img:opacity-100 transition-opacity flex gap-1">
-                        <a
-                          href={message.fileUrl}
-                          download={message.fileName || 'image'}
-                          onClick={(e) => e.stopPropagation()}
-                          className="bg-black/60 backdrop-blur text-white rounded-md p-1.5 hover:bg-black/80"
-                          title="Download"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                        </a>
-                      </div>
-                    </button>
-                  )}
-                  {message.content && message.content !== '📷 Photo' && (
-                    <MarkdownRenderer content={message.content} className="text-sm" />
-                  )}
-                </div>
-              ) : message.type === 'video' && message.fileUrl ? (
-                <div className="space-y-1">
-                  {message.isSpoiler && !spoilerRevealed ? (
-                    <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="video" />
-                  ) : (
-                    <VideoPlayer
-                      src={message.fileUrl}
-                      thumbnail={message.videoThumbnail}
-                      duration={message.videoDuration}
-                      fileName={message.fileName}
-                      fileSize={message.fileSize}
-                      senderColor={senderColor}
-                      isOwn={isOwn}
-                      isSpoiler={false}
-                    />
-                  )}
-                  {message.content && message.content !== '🎥 Video' && (
-                    <MarkdownRenderer content={message.content} className="text-sm" />
-                  )}
-                </div>
-              ) : message.type === 'voice' ? (
-                <div className="min-w-[240px]">
-                  {message.isSpoiler && !spoilerRevealed ? (
-                    <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="voice" />
-                  ) : (
-                    <AudioPlayer
-                      src={message.fileUrl!}
-                      duration={message.audioDuration}
-                      waveform={message.audioWaveform}
-                      senderColor={senderColor}
-                      isOwn={isOwn}
-                    />
-                  )}
-                </div>
-              ) : message.type === 'audio' && message.fileUrl ? (
-                <div className="min-w-[240px]">
-                  <audio controls src={message.fileUrl} className="w-full" />
-                  {message.fileName && (
-                    <p className="text-xs opacity-70 mt-1 truncate">🎵 {message.fileName}</p>
-                  )}
-                </div>
-              ) : message.type === 'gif' && message.gifUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={message.gifUrl} alt={message.gifId || 'gif'} className="rounded-lg max-h-64 max-w-full" />
-              ) : message.type === 'file' && message.fileUrl ? (
-                <a
-                  href={message.fileUrl}
-                  download={message.fileName || 'file'}
-                  onClick={(e) => e.stopPropagation()}
-                  className="flex items-center gap-3 py-1 min-w-[200px]"
-                >
-                  <div className="h-10 w-10 rounded-lg bg-background/20 flex items-center justify-center shrink-0">
-                    <FileIcon className="h-5 w-5" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium truncate">{message.fileName}</p>
-                    {message.fileSize && <p className="text-xs opacity-70">{formatBytes(message.fileSize)}</p>}
-                  </div>
-                </a>
-              ) : message.isSpoiler && !spoilerRevealed ? (
-                <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="text" />
-              ) : (
-                <MarkdownRenderer content={message.content} className="text-sm" />
-              )}
+            {/* 3-dots button - opens dropdown menu (only on hover) */}
+            <DropdownMenuTrigger asChild>
+              <button
+                className="absolute top-1 right-1 opacity-0 group-hover/msg:opacity-100 transition-opacity bg-black/40 hover:bg-black/60 text-white rounded-md p-1 z-10"
+                title="More options"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+              >
+                <MoreVertical className="h-3 w-3" />
+              </button>
+            </DropdownMenuTrigger>
 
-              {/* Metadata footer */}
-              <div className={cn(
-                'flex items-center gap-1 mt-1 text-[10px]',
-                isOwn ? 'text-primary-foreground/70' : 'text-muted-foreground'
-              )}>
-                {message.pending ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
+            {message.type === 'image' && message.fileUrl ? (
+              <div className="space-y-1">
+                {message.isSpoiler && !spoilerRevealed ? (
+                  <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="image" />
                 ) : (
-                  <>
-                    {message.editedAt && <span className="italic">edited</span>}
-                    <span>{formatTimeFull(message.createdAt)}</span>
-                    {isOwn && (
-                      message.read ? <CheckCheck className="h-3 w-3" /> : <Check className="h-3 w-3" />
-                    )}
-                  </>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setImageOpen(true) }}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    className="block relative group/img"
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={message.fileUrl} alt={message.fileName || 'image'} className="rounded-lg max-h-64 max-w-full object-cover" />
+                    <div className="absolute top-1 right-1 opacity-0 group-hover/img:opacity-100 transition-opacity flex gap-1">
+                      <a
+                        href={message.fileUrl}
+                        download={message.fileName || 'image'}
+                        onClick={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => e.stopPropagation()}
+                        className="bg-black/60 backdrop-blur text-white rounded-md p-1.5 hover:bg-black/80"
+                        title="Download"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </a>
+                    </div>
+                  </button>
+                )}
+                {message.content && message.content !== '📷 Photo' && (
+                  <MarkdownRenderer content={message.content} className="text-sm" />
                 )}
               </div>
+            ) : message.type === 'video' && message.fileUrl ? (
+              <div className="space-y-1" onPointerDown={(e) => e.stopPropagation()}>
+                {message.isSpoiler && !spoilerRevealed ? (
+                  <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="video" />
+                ) : (
+                  <VideoPlayer
+                    src={message.fileUrl}
+                    thumbnail={message.videoThumbnail}
+                    duration={message.videoDuration}
+                    fileName={message.fileName}
+                    fileSize={message.fileSize}
+                    senderColor={senderColor}
+                    isOwn={isOwn}
+                    isSpoiler={false}
+                  />
+                )}
+                {message.content && message.content !== '🎥 Video' && (
+                  <MarkdownRenderer content={message.content} className="text-sm" />
+                )}
+              </div>
+            ) : message.type === 'voice' ? (
+              <div className="min-w-[240px]" onPointerDown={(e) => e.stopPropagation()}>
+                {message.isSpoiler && !spoilerRevealed ? (
+                  <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="voice" />
+                ) : (
+                  <AudioPlayer
+                    src={message.fileUrl!}
+                    duration={message.audioDuration}
+                    waveform={message.audioWaveform}
+                    senderColor={senderColor}
+                    isOwn={isOwn}
+                  />
+                )}
+              </div>
+            ) : message.type === 'audio' && message.fileUrl ? (
+              <div className="min-w-[240px]" onPointerDown={(e) => e.stopPropagation()}>
+                <audio controls src={message.fileUrl} className="w-full" />
+                {message.fileName && (
+                  <p className="text-xs opacity-70 mt-1 truncate">🎵 {message.fileName}</p>
+                )}
+              </div>
+            ) : message.type === 'gif' && message.gifUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={message.gifUrl} alt={message.gifId || 'gif'} className="rounded-lg max-h-64 max-w-full" />
+            ) : message.type === 'file' && message.fileUrl ? (
+              <a
+                href={message.fileUrl}
+                download={message.fileName || 'file'}
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
+                className="flex items-center gap-3 py-1 min-w-[200px]"
+              >
+                <div className="h-10 w-10 rounded-lg bg-background/20 flex items-center justify-center shrink-0">
+                  <FileIcon className="h-5 w-5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium truncate">{message.fileName}</p>
+                  {message.fileSize && <p className="text-xs opacity-70">{formatBytes(message.fileSize)}</p>}
+                </div>
+              </a>
+            ) : message.isSpoiler && !spoilerRevealed ? (
+              <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="text" />
+            ) : (
+              <MarkdownRenderer content={message.content} className="text-sm" />
+            )}
+
+            {/* Metadata footer */}
+            <div className={cn(
+              'flex items-center gap-1 mt-1 text-[10px]',
+              isOwn ? 'text-primary-foreground/70' : 'text-muted-foreground'
+            )}>
+              {message.pending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <>
+                  {message.editedAt && <span className="italic">edited</span>}
+                  <span>{formatTimeFull(message.createdAt)}</span>
+                  {isOwn && (
+                    message.read ? <CheckCheck className="h-3 w-3" /> : <Check className="h-3 w-3" />
+                  )}
+                </>
+              )}
             </div>
-          </DropdownMenuTrigger>
+          </div>
           <DropdownMenuContent align={isOwn ? 'end' : 'start'}>
             <DropdownMenuItem onClick={() => onToggleReaction('❤️')}>
               <span className="mr-2">❤️</span> React
