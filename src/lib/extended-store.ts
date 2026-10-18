@@ -113,6 +113,16 @@ interface ExtendedState {
   silentSend: boolean
   setSilentSend: (v: boolean) => void
 
+  // Spoiler flag (when sending)
+  spoilerSend: boolean
+  setSpoilerSend: (v: boolean) => void
+
+  // Forward modal
+  showForwardModal: boolean
+  forwardSourceMessageId: string | null
+  setShowForwardModal: (v: boolean) => void
+  setForwardSourceMessageId: (id: string | null) => void
+
   // Channels
   channels: Channel[]
   setChannels: (channels: Channel[]) => void
@@ -237,6 +247,16 @@ export const useExtendedStore = create<ExtendedState>((set) => ({
   // Silent send
   silentSend: false,
   setSilentSend: (v) => set({ silentSend: v }),
+
+  // Spoiler send
+  spoilerSend: false,
+  setSpoilerSend: (v) => set({ spoilerSend: v }),
+
+  // Forward modal
+  showForwardModal: false,
+  forwardSourceMessageId: null,
+  setShowForwardModal: (v) => set({ showForwardModal: v }),
+  setForwardSourceMessageId: (id) => set({ forwardSourceMessageId: id }),
 
   // Channels
   channels: [],

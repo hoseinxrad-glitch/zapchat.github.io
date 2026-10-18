@@ -6,6 +6,7 @@ import {
   Send, Paperclip, Smile, ArrowLeft, Phone, Video, MoreVertical,
   Check, CheckCheck, File as FileIcon, X, Loader2, Users, Settings,
   Reply, Edit2, Pin, Trash2, Copy, Bell, BellOff, Image as ImageIcon, Mic,
+  Forward, EyeOff, Film, Music, Download,
 } from 'lucide-react'
 import { Avatar } from './Avatar'
 import { Button } from '@/components/ui/button'
@@ -24,6 +25,8 @@ import { ReactionPicker } from './ReactionPicker'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { VoiceRecorder } from './VoiceRecorder'
 import { CircularVoicePlayer as AudioPlayer } from './CircularVoicePlayer'
+import { VideoPlayer } from './VideoPlayer'
+import { ImageViewer } from './ImageViewer'
 
 const EMOJIS = ['😀', '😂', '❤️', '👍', '👎', '🔥', '🎉', '🙏', '😍', '😮', '😢', '🤔', '👀', '💯', '✨', '⚡', '🚀', '💎', '🌟', '💜']
 
@@ -63,6 +66,8 @@ export function ChatWindow({
   const setPinnedMessage = useExtendedStore((s) => s.setPinnedMessage)
   const silentSend = useExtendedStore((s) => s.silentSend)
   const setSilentSend = useExtendedStore((s) => s.setSilentSend)
+  const spoilerSend = useExtendedStore((s) => s.spoilerSend)
+  const setSpoilerSend = useExtendedStore((s) => s.setSpoilerSend)
   const call = useExtendedStore((s) => s.call)
   const setCall = useExtendedStore((s) => s.setCall)
 
@@ -72,6 +77,8 @@ export function ChatWindow({
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
+  const videoInputRef = useRef<HTMLInputElement>(null)
+  const audioInputRef = useRef<HTMLInputElement>(null)
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const lastTypingSentRef = useRef<boolean>(false)
 
@@ -247,7 +254,7 @@ export function ChatWindow({
             method: 'POST',
             body: JSON.stringify({
               groupId: activeId, content: text, type: 'text',
-              replyToId: replyTo?.id, silent: silentSend, tempId,
+              replyToId: replyTo?.id, silent: silentSend, isSpoiler: spoilerSend, tempId,
             }),
           }
         )
@@ -297,7 +304,7 @@ export function ChatWindow({
         method: 'POST',
         body: JSON.stringify({
           chatId: activeId, receiverId: otherUser.id, content: text, type: 'text',
-          replyToId: replyTo?.id, silent: silentSend, tempId,
+          replyToId: replyTo?.id, silent: silentSend, isSpoiler: spoilerSend, tempId,
         }),
       })
       updateMessage(activeId, tempId, data.message)
@@ -312,6 +319,7 @@ export function ChatWindow({
         })
       }
       setReplyTo(null)
+      setSpoilerSend(false)
     } catch (e: any) {
       toast.error('Failed to send')
     }
@@ -368,21 +376,42 @@ export function ChatWindow({
     try {
       const formData = new FormData()
       formData.append('file', file)
-      const uploadRes = await apiFetch<{ url: string; fileName: string; fileSize: number }>(
+      const uploadRes = await apiFetch<{ url: string; fileName: string; fileSize: number; mimeType?: string }>(
         '/api/upload', { method: 'POST', body: formData }
       )
 
       const finalIsImage = isImage || file.type.startsWith('image/')
+      const isVideo = file.type.startsWith('video/')
+      const isAudio = file.type.startsWith('audio/')
+
+      const msgType = finalIsImage ? 'image' : isVideo ? 'video' : isAudio ? 'audio' : 'file'
+      const msgContent = finalIsImage ? '📷 Photo' : isVideo ? '🎥 Video' : isAudio ? `🎵 ${file.name}` : `📎 ${file.name}`
+
+      // Try to extract video duration from the file metadata
+      let videoDuration: number | undefined
+      if (isVideo) {
+        videoDuration = await new Promise<number | undefined>((resolve) => {
+          const video = document.createElement('video')
+          video.preload = 'metadata'
+          video.onloadedmetadata = () => {
+            resolve(video.duration || undefined)
+          }
+          video.onerror = () => resolve(undefined)
+          video.src = URL.createObjectURL(file)
+        })
+      }
+
       const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
       const tempMessage: ChatMessage = {
         id: tempId,
         chatId: isGroup ? null : activeId,
         groupId: isGroup ? activeId : null,
-        content: finalIsImage ? '📷 Photo' : `📎 ${file.name}`,
-        type: finalIsImage ? 'image' : 'file',
+        content: msgContent,
+        type: msgType as any,
         fileUrl: uploadRes.url,
         fileName: uploadRes.fileName,
         fileSize: uploadRes.fileSize,
+        videoDuration,
         senderId: currentUser.id,
         receiverId: isGroup ? null : otherUser?.id,
         read: false,
@@ -393,17 +422,26 @@ export function ChatWindow({
         },
         pending: true,
         silent: silentSend,
+        isSpoiler: spoilerSend,
         replyToId: replyTo?.id,
       }
       addMessage(activeId, tempMessage)
 
+      const commonFields = {
+        content: msgContent,
+        type: msgType,
+        fileUrl: uploadRes.url,
+        fileName: uploadRes.fileName,
+        fileSize: uploadRes.fileSize,
+        videoDuration,
+        replyToId: replyTo?.id,
+        silent: silentSend,
+        isSpoiler: spoilerSend,
+        tempId,
+      }
       const body = isGroup && group
-        ? { groupId: activeId, content: tempMessage.content, type: tempMessage.type,
-            fileUrl: uploadRes.url, fileName: uploadRes.fileName, fileSize: uploadRes.fileSize,
-            replyToId: replyTo?.id, silent: silentSend, tempId }
-        : { chatId: activeId, receiverId: otherUser!.id, content: tempMessage.content, type: tempMessage.type,
-            fileUrl: uploadRes.url, fileName: uploadRes.fileName, fileSize: uploadRes.fileSize,
-            replyToId: replyTo?.id, silent: silentSend, tempId }
+        ? { groupId: activeId, ...commonFields }
+        : { chatId: activeId, receiverId: otherUser!.id, ...commonFields }
 
       const data = await apiFetch<{ message: ChatMessage; memberIds?: string[] }>(
         '/api/messages', { method: 'POST', body: JSON.stringify(body) }
@@ -420,11 +458,22 @@ export function ChatWindow({
         }
       }
       setReplyTo(null)
+      setSpoilerSend(false)
     } catch (err: any) {
       toast.error(err.message || 'Upload failed')
     } finally {
       setIsUploading(false)
     }
+  }
+
+  const handleVideoSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Reuse the file select handler with isImage=false; it auto-detects video type
+    await handleFileSelect(e, false)
+  }
+
+  const handleAudioSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Reuse the file select handler with isImage=false; it auto-detects audio type
+    await handleFileSelect(e, false)
   }
 
   const handleVoiceSend = async (audioData: {
@@ -823,6 +872,16 @@ export function ChatWindow({
                       onEdit={() => handleEditMessage(msg)}
                       onPin={() => handlePinMessage(msg)}
                       onDelete={() => handleDeleteForBoth(msg)}
+                      onForward={() => {
+                        useExtendedStore.getState().setForwardSourceMessageId(msg.id)
+                        useExtendedStore.getState().setShowForwardModal(true)
+                      }}
+                      onCopyMedia={() => {
+                        if (msg.fileUrl) {
+                          navigator.clipboard?.writeText(window.location.origin + msg.fileUrl)
+                          toast.success('Media link copied')
+                        }
+                      }}
                       replyToMessage={messages.find((m) => m.id === msg.replyToId)}
                     />
                   )
@@ -903,6 +962,20 @@ export function ChatWindow({
         <div className="max-w-3xl mx-auto flex items-center gap-2">
           <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => handleFileSelect(e, false)} />
           <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => handleFileSelect(e, true)} />
+          <input
+            ref={videoInputRef}
+            type="file"
+            accept="video/*"
+            className="hidden"
+            onChange={(e) => handleVideoSelect(e)}
+          />
+          <input
+            ref={audioInputRef}
+            type="file"
+            accept="audio/*"
+            className="hidden"
+            onChange={(e) => handleAudioSelect(e)}
+          />
 
           {/* Attach menu */}
           <DropdownMenu>
@@ -916,12 +989,31 @@ export function ChatWindow({
                 <ImageIcon className="h-4 w-4 mr-2" />
                 Photo
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => videoInputRef.current?.click()}>
+                <Film className="h-4 w-4 mr-2" />
+                Video
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => audioInputRef.current?.click()}>
+                <Music className="h-4 w-4 mr-2" />
+                Audio file
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => fileInputRef.current?.click()}>
                 <FileIcon className="h-4 w-4 mr-2" />
-                File
+                Any file
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/* Spoiler toggle */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className={`rounded-full shrink-0 ${spoilerSend ? 'text-purple-500 bg-purple-500/10' : ''}`}
+            onClick={() => setSpoilerSend(!spoilerSend)}
+            title={spoilerSend ? 'Spoiler on' : 'Spoiler off'}
+          >
+            <EyeOff className="h-5 w-5" />
+          </Button>
 
           {/* Voice recorder (shown when input empty) */}
           {!input.trim() && (
@@ -972,7 +1064,7 @@ export function ChatWindow({
 function MessageBubble({
   message, isOwn, showAvatar, showSenderName, isLastInGroup,
   otherUser, isGroup, currentUser, reactions, onToggleReaction,
-  onReply, onEdit, onPin, onDelete, replyToMessage,
+  onReply, onEdit, onPin, onDelete, onForward, onCopyMedia, replyToMessage,
 }: {
   message: ChatMessage
   isOwn: boolean
@@ -988,11 +1080,14 @@ function MessageBubble({
   onEdit: () => void
   onPin: () => void
   onDelete: () => void
+  onForward: () => void
+  onCopyMedia: () => void
   replyToMessage?: ChatMessage
 }) {
   const [imageOpen, setImageOpen] = useState(false)
   const [showReactionPicker, setShowReactionPicker] = useState(false)
   const [bubbleRef, setBubbleRef] = useState<DOMRect | null>(null)
+  const [spoilerRevealed, setSpoilerRevealed] = useState(false)
   const senderName = message.sender?.displayName || (message.isAnonymous ? 'Anonymous' : 'Unknown')
   const senderColor = message.sender?.avatarColor || '#6366f1'
 
@@ -1011,6 +1106,14 @@ function MessageBubble({
           <span className="text-xs font-medium mb-0.5 ml-1" style={{ color: senderColor }}>
             {senderName}
           </span>
+        )}
+
+        {/* Forwarded banner */}
+        {message.forwardedFromName && (
+          <div className={`mb-1 flex items-center gap-1 text-[10px] opacity-70 px-1 ${isOwn ? 'justify-end' : ''}`}>
+            <Forward className="h-3 w-3" />
+            <span>Forwarded from <strong>{message.forwardedFromName}</strong></span>
+          </div>
         )}
 
         {/* Reply preview */}
@@ -1063,23 +1166,69 @@ function MessageBubble({
 
               {message.type === 'image' && message.fileUrl ? (
                 <div className="space-y-1">
-                  <button onClick={(e) => { e.stopPropagation(); setImageOpen(true) }} className="block">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={message.fileUrl} alt={message.fileName || 'image'} className="rounded-lg max-h-64 max-w-full object-cover" />
-                  </button>
+                  {message.isSpoiler && !spoilerRevealed ? (
+                    <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="image" />
+                  ) : (
+                    <button onClick={(e) => { e.stopPropagation(); setImageOpen(true) }} className="block relative group/img">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={message.fileUrl} alt={message.fileName || 'image'} className="rounded-lg max-h-64 max-w-full object-cover" />
+                      <div className="absolute top-1 right-1 opacity-0 group-hover/img:opacity-100 transition-opacity flex gap-1">
+                        <a
+                          href={message.fileUrl}
+                          download={message.fileName || 'image'}
+                          onClick={(e) => e.stopPropagation()}
+                          className="bg-black/60 backdrop-blur text-white rounded-md p-1.5 hover:bg-black/80"
+                          title="Download"
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                        </a>
+                      </div>
+                    </button>
+                  )}
                   {message.content && message.content !== '📷 Photo' && (
+                    <MarkdownRenderer content={message.content} className="text-sm" />
+                  )}
+                </div>
+              ) : message.type === 'video' && message.fileUrl ? (
+                <div className="space-y-1">
+                  {message.isSpoiler && !spoilerRevealed ? (
+                    <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="video" />
+                  ) : (
+                    <VideoPlayer
+                      src={message.fileUrl}
+                      thumbnail={message.videoThumbnail}
+                      duration={message.videoDuration}
+                      fileName={message.fileName}
+                      fileSize={message.fileSize}
+                      senderColor={senderColor}
+                      isOwn={isOwn}
+                      isSpoiler={false}
+                    />
+                  )}
+                  {message.content && message.content !== '🎥 Video' && (
                     <MarkdownRenderer content={message.content} className="text-sm" />
                   )}
                 </div>
               ) : message.type === 'voice' ? (
                 <div className="min-w-[240px]">
-                  <AudioPlayer
-                    src={message.fileUrl!}
-                    duration={message.audioDuration}
-                    waveform={message.audioWaveform}
-                    senderColor={senderColor}
-                    isOwn={isOwn}
-                  />
+                  {message.isSpoiler && !spoilerRevealed ? (
+                    <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="voice" />
+                  ) : (
+                    <AudioPlayer
+                      src={message.fileUrl!}
+                      duration={message.audioDuration}
+                      waveform={message.audioWaveform}
+                      senderColor={senderColor}
+                      isOwn={isOwn}
+                    />
+                  )}
+                </div>
+              ) : message.type === 'audio' && message.fileUrl ? (
+                <div className="min-w-[240px]">
+                  <audio controls src={message.fileUrl} className="w-full" />
+                  {message.fileName && (
+                    <p className="text-xs opacity-70 mt-1 truncate">🎵 {message.fileName}</p>
+                  )}
                 </div>
               ) : message.type === 'gif' && message.gifUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
@@ -1099,6 +1248,8 @@ function MessageBubble({
                     {message.fileSize && <p className="text-xs opacity-70">{formatBytes(message.fileSize)}</p>}
                   </div>
                 </a>
+              ) : message.isSpoiler && !spoilerRevealed ? (
+                <SpoilerOverlay onReveal={() => setSpoilerRevealed(true)} type="text" />
               ) : (
                 <MarkdownRenderer content={message.content} className="text-sm" />
               )}
@@ -1130,6 +1281,10 @@ function MessageBubble({
               <Reply className="h-4 w-4 mr-2" />
               Reply
             </DropdownMenuItem>
+            <DropdownMenuItem onClick={onForward}>
+              <Forward className="h-4 w-4 mr-2" />
+              Forward
+            </DropdownMenuItem>
             <DropdownMenuItem onClick={onPin}>
               <Pin className="h-4 w-4 mr-2" />
               Pin
@@ -1138,6 +1293,12 @@ function MessageBubble({
               <Copy className="h-4 w-4 mr-2" />
               Copy text
             </DropdownMenuItem>
+            {message.fileUrl && (
+              <DropdownMenuItem onClick={onCopyMedia}>
+                <Copy className="h-4 w-4 mr-2" />
+                Copy media link
+              </DropdownMenuItem>
+            )}
             {isOwn && (
               <>
                 <DropdownMenuSeparator />
@@ -1185,16 +1346,48 @@ function MessageBubble({
         />
       </div>
 
-      {/* Image preview modal */}
-      {imageOpen && message.fileUrl && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4" onClick={() => setImageOpen(false)}>
-          <button className="absolute top-4 right-4 text-white/80 hover:text-white p-2">
-            <X className="h-6 w-6" />
-          </button>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={message.fileUrl} alt={message.fileName || 'image'} className="max-h-[90vh] max-w-full object-contain rounded-lg" onClick={(e) => e.stopPropagation()} />
-        </div>
-      )}
+      {/* Image viewer (with zoom, download, fullscreen) */}
+      <ImageViewer
+        src={message.fileUrl || ''}
+        fileName={message.fileName}
+        isOpen={imageOpen}
+        onClose={() => setImageOpen(false)}
+      />
     </div>
+  )
+}
+
+// ============================================================
+// SpoilerOverlay - hides content until clicked
+// ============================================================
+function SpoilerOverlay({ onReveal, type }: { onReveal: () => void; type: 'text' | 'image' | 'video' | 'voice' }) {
+  const icons = {
+    text: '📝',
+    image: '📷',
+    video: '🎥',
+    voice: '🎤',
+  }
+  const labels = {
+    text: 'Hidden message',
+    image: 'Hidden photo',
+    video: 'Hidden video',
+    voice: 'Hidden voice message',
+  }
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onReveal() }}
+      className="relative w-full min-h-[80px] rounded-lg overflow-hidden bg-gradient-to-br from-purple-900/60 to-pink-900/60 backdrop-blur-md flex flex-col items-center justify-center group hover:scale-[1.02] transition-transform p-4"
+    >
+      <div className="absolute inset-0 opacity-30" style={{
+        backgroundImage: 'repeating-linear-gradient(45deg, rgba(255,255,255,0.1) 0 2px, transparent 2px 8px)'
+      }} />
+      <div className="relative z-10 text-center">
+        <div className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-white/10 mb-2 group-hover:scale-110 transition-transform">
+          <span className="text-lg">{icons[type]}</span>
+        </div>
+        <p className="text-white text-xs font-medium">{labels[type]}</p>
+        <p className="text-white/60 text-[10px] mt-0.5">Click to reveal</p>
+      </div>
+    </button>
   )
 }

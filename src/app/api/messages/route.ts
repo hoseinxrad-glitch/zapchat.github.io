@@ -24,7 +24,9 @@ export async function POST(req: NextRequest) {
       chatId, groupId, channelId, receiverId,
       content, type, fileUrl, fileName, fileSize,
       audioDuration, audioWaveform, gifId, gifUrl,
+      videoDuration, videoThumbnail,
       replyToId, isAnonymous, silent, tempId,
+      isSpoiler, forwardedFromName, forwardedFromId,
     } = body as any
 
     if (content === undefined && !fileUrl && !gifUrl) {
@@ -49,8 +51,12 @@ export async function POST(req: NextRequest) {
           type: type || 'text',
           fileUrl, fileName, fileSize,
           gifId, gifUrl,
+          videoDuration, videoThumbnail,
           replyToId: replyToId || null,
           silent: !!silent,
+          isSpoiler: !!isSpoiler,
+          forwardedFromName: forwardedFromName || null,
+          forwardedFromId: forwardedFromId || null,
         },
         include: { sender: { select: { id: true, username: true, displayName: true, avatarColor: true } } },
       })
@@ -95,9 +101,13 @@ export async function POST(req: NextRequest) {
           fileUrl, fileName, fileSize,
           audioDuration, audioWaveform,
           gifId, gifUrl,
+          videoDuration, videoThumbnail,
           replyToId: replyToId || null,
           silent: !!silent,
           isAnonymous: finalAnon,
+          isSpoiler: !!isSpoiler,
+          forwardedFromName: forwardedFromName || null,
+          forwardedFromId: forwardedFromId || null,
         },
         include: { sender: { select: { id: true, username: true, displayName: true, avatarColor: true } } },
       })
@@ -137,8 +147,12 @@ export async function POST(req: NextRequest) {
         fileUrl, fileName, fileSize,
         audioDuration, audioWaveform,
         gifId, gifUrl,
+        videoDuration, videoThumbnail,
         replyToId: replyToId || null,
         silent: !!silent,
+        isSpoiler: !!isSpoiler,
+        forwardedFromName: forwardedFromName || null,
+        forwardedFromId: forwardedFromId || null,
       },
       include: { sender: { select: { id: true, username: true, displayName: true, avatarColor: true } } },
     })

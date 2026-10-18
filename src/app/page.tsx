@@ -16,6 +16,7 @@ import { AdminPanel } from '@/components/chat/AdminPanel'
 import { GroupSettingsPanel } from '@/components/chat/GroupSettingsPanel'
 import { ChatSettingsPanel } from '@/components/chat/ChatSettingsPanel'
 import { ChannelView } from '@/components/chat/ChannelView'
+import { ForwardModal } from '@/components/chat/ForwardModal'
 import { ProfilePanel } from '@/components/chat/ProfilePanel'
 import { GroupInfoPanel } from '@/components/chat/GroupInfoPanel'
 import { useChatSocket } from '@/components/chat/useChatSocket'
@@ -202,6 +203,7 @@ export default function Home() {
         chatId={chatSettingsChatId}
         groupId={chatSettingsGroupId}
       />
+      <ForwardModal />
 
       {/* Stories viewer */}
       <AnimatePresence>

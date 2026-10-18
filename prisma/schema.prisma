@@ -130,9 +130,17 @@ model Message {
   // GIF specific
   gifId           String?
   gifUrl          String?
+  // Video specific
+  videoDuration   Int? // seconds
+  videoThumbnail  String? // URL to thumbnail image
   // Reply / edit / pin
   replyToId       String? // references another Message
   editedAt        DateTime?
+  // Forwarded message metadata
+  forwardedFromName String? // original sender name (if forwarded)
+  forwardedFromId  String?  // original sender user id (if forwarded from a real user)
+  // Spoiler (Telegram-style: hidden until clicked)
+  isSpoiler       Boolean  @default(false)
   // Sender
   senderId        String
   receiverId      String?  // null for group/channel messages
