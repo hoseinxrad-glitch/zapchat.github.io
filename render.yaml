@@ -1,39 +1,20 @@
-# Render Blueprint for ZapChat
-# This file defines all the services needed to run ZapChat in production.
-# Deploy this on https://render.com — sign up free, then "New Blueprint" pointing to your repo.
-
-services:
-  # ============================================================
-  # PostgreSQL Database (free for 90 days, then $7/mo)
-  # ============================================================
-  - type: pserv
-    name: zapchat-database
-    env: docker
+databases:
+  - name: zapchat-database
     region: oregon
     plan: free
-    dockerfilePath: ./Dockerfile.db
-    envVars:
-      - key: POSTGRES_USER
-        value: zapchat
-      - key: POSTGRES_PASSWORD
-        generateValue: true
-      - key: POSTGRES_DB
-        value: zapchat
-      - key: PGDATA
-        value: /var/lib/postgresql/data/pgdata
+    ipAllowList: []
+    postgresMajorVersion: 16
 
-  # ============================================================
-  # Main Next.js Web Service (frontend + API + auth + chat)
-  # Free tier: sleeps after 15min of inactivity, 750h/month
-  # ============================================================
+services:
+  # Next.js Web Service
   - type: web
     name: zapchat-web
     runtime: node
     plan: free
     region: oregon
     branch: main
-    buildCommand: npm install && npx prisma generate && npx prisma db push --accept-data-loss
-    startCommand: npm run start:prod
+    buildCommand: npm install && npx prisma generate && npx prisma db push --accept-data-loss && npm run build
+    startCommand: node .next/standalone/server.js
     healthCheckPath: /api/health
     autoDeploy: true
     envVars:
@@ -48,16 +29,11 @@ services:
       - key: AUTH_SECRET
         generateValue: true
       - key: NEXT_PUBLIC_SOCKET_URL
-        value: https://zapchat-web.onrender.com
-      - key: NEXT_PUBLIC_APP_URL
-        value: https://zapchat-web.onrender.com
+        value: https://zapchat-socket.onrender.com
       - key: UPLOAD_DIR
         value: /data/uploads
 
-  # ============================================================
-  # WebSocket Service (real-time messaging)
-  # Separate service so it can scale independently if needed
-  # ============================================================
+  # WebSocket Service
   - type: web
     name: zapchat-socket
     runtime: node
