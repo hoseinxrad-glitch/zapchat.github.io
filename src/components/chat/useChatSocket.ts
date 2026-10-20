@@ -93,7 +93,8 @@ export function useChatSocket() {
     if (!currentUser) return
     if (socketRef.current) return
 
-    const socket = io('/?XTransformPort=3003', {
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || ''
+    const socket = io(`${socketUrl}/?XTransformPort=3003`, {
       transports: ['websocket', 'polling'],
       forceNew: true,
       reconnection: true,
