@@ -1,9 +1,6 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  // Skip building API routes for static export
-  // (They will be served from Render backend instead)
-  outputFileTracingIncludes: {},
   output: "export",
   images: {
     unoptimized: true,
@@ -11,10 +8,12 @@ const nextConfig: NextConfig = {
   typescript: {
     ignoreBuildErrors: true,
   },
-  eslint: {
-    ignoreDuringBuilds: true,
-  },
   reactStrictMode: false,
+  // Skip API routes during static export
+  // They are served from Render backend
+  experimental: {
+    missingSuspenseWithCSRBailout: true,
+  },
 };
 
 export default nextConfig;
