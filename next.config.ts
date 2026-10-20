@@ -1,7 +1,11 @@
 import type { NextConfig } from "next";
 
+const repoName = "zapchat.github.io"; // اسم ریپوی شما
+
 const nextConfig: NextConfig = {
   output: "export",
+  basePath: `/${repoName}`,
+  assetPrefix: `/${repoName}/`,
   images: {
     unoptimized: true,
   },
@@ -9,11 +13,6 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
-  // Skip API routes during static export
-  // They are served from Render backend
-  experimental: {
-    missingSuspenseWithCSRBailout: true,
-  },
 };
 
 export default nextConfig;
