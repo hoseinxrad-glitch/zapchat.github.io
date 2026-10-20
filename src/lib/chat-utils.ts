@@ -65,7 +65,10 @@ export async function apiFetch<T = any>(
     headers['Content-Type'] = 'application/json'
   }
 
-  const res = await fetch(path, { ...options, headers })
+  // Use API URL from env (for GitHub Pages deployment)
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || ''
+  const res = await fetch(`${apiUrl}${path}`, { ...options, headers })
+  // ...
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
     const err = new Error(data?.error || `HTTP ${res.status}`) as any
