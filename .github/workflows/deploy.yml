@@ -27,31 +27,21 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-        with:
-          static_site_generator: next
-
       - name: Install dependencies
         run: npm ci
 
       - name: Build static export
         env:
-          # GitHub Pages serves at /REPO_NAME/, so we need this base path
-          # IMPORTANT: Replace 'zapchat' below with your actual repository name
-          NEXT_BASE_PATH: ${{ secrets.NEXT_BASE_PATH || '/zapchat' }}
-          NEXT_ASSETS_PREFIX: ${{ secrets.NEXT_BASE_PATH || '/zapchat' }}
-          # Set this to your Render app URL after deploying the backend
-          # Format: https://your-app-name.onrender.com
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_SOCKET_URL: ${{ secrets.NEXT_PUBLIC_SOCKET_URL }}
-          NEXT_PUBLIC_APP_URL: ${{ secrets.NEXT_PUBLIC_APP_URL }}
-          # JWT secret for signing auth tokens
-          # Generate with: openssl rand -hex 32
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
-        run: npm run build:static
+        run: npx next build
 
-      - name: Add .nojekyll (to bypass Jekyll processing)
+      - name: Add .nojekyll
         run: touch ./out/.nojekyll
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
