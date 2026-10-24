@@ -1,13 +1,6 @@
-// Allow static export to skip this route (it's only for Render backend)
-export const dynamic = 'force-static'
-
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getAuthUser, hashPassword, verifyPassword, generateToken, verifyToken } from '@/lib/auth'
-
-// Force dynamic rendering for all API routes
-export const dynamic = 'force-dynamic'
-export const runtime = 'nodejs'
 
 // CORS headers
 const corsHeaders = {
@@ -21,7 +14,7 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders })
 }
 
-// Main handler
+// Main handlers
 export async function GET(req: NextRequest, { params }: { params: { path: string[] } }) {
   const res = await handleRequest(req, params, 'GET')
   res.headers.set('Access-Control-Allow-Origin', '*')
