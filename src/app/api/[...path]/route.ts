@@ -1,3 +1,6 @@
+// Allow static export to skip this route (it's only for Render backend)
+export const dynamic = 'force-static'
+
 import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getAuthUser, hashPassword, verifyPassword, generateToken, verifyToken } from '@/lib/auth'
