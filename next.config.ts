@@ -1,11 +1,12 @@
 import type { NextConfig } from "next";
 
+const isStaticExport = process.env.BUILD_STATIC === "true";
 const repoName = "zapchat.github.io";
 
 const nextConfig: NextConfig = {
-  output: "export",
-  basePath: `/${repoName}`,
-  assetPrefix: `/${repoName}/`,
+  output: isStaticExport ? "export" : "standalone",
+  basePath: isStaticExport ? `/${repoName}` : "",
+  assetPrefix: isStaticExport ? `/${repoName}/` : "",
   images: {
     unoptimized: true,
   },
@@ -13,19 +14,6 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
-  // اضافه کردن تنظیمات CORS برای اجازه دادن به GitHub Pages
-  async headers() {
-    return [
-      {
-        source: "/api/:path*",
-        headers: [
-          { key: "Access-Control-Allow-Origin", value: "*" },
-          { key: "Access-Control-Allow-Methods", value: "GET,POST,PATCH,DELETE,OPTIONS" },
-          { key: "Access-Control-Allow-Headers", value: "Content-Type, Authorization" },
-        ],
-      },
-    ];
-  },
 };
 
 export default nextConfig;
