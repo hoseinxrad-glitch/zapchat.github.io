@@ -2,9 +2,6 @@ import { NextRequest, NextResponse } from 'next/server'
 import { db } from '@/lib/db'
 import { getAuthUser, hashPassword, verifyPassword, generateToken, verifyToken } from '@/lib/auth'
 
-// Allow GitHub Pages to skip this during static export
-export const dynamic = 'force-static'
-
 // CORS headers
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
