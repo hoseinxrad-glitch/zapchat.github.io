@@ -34,7 +34,8 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_SOCKET_URL: ${{ secrets.NEXT_PUBLIC_SOCKET_URL }}
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
-        run: npx next build
+          BUILD_STATIC: "true"
+        run: npm run build:static
 
       - name: Add .nojekyll
         run: touch ./out/.nojekyll
